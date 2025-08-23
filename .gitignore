@@ -1,0 +1,33 @@
+# Logs and outputs
+logs/
+*.log
+*.out
+*.err
+auto_submit.log
+
+# Data and model outputs
+/oak/
+*.h5
+*.npz
+*_output/
+*_test_output/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files
+*.tmp
+slurm-*
+nohup.out
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
