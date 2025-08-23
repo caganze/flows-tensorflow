@@ -7,7 +7,7 @@ echo "🚀 Setting up Git repository for TensorFlow Probability flows pipeline..
 git init
 
 # Create a comprehensive .gitignore file
-cat > .gitignore << 'EOF'
+cat > .gitignore << 'GITIGNORE'
 # Logs and outputs
 logs/
 *.log
@@ -41,7 +41,7 @@ nohup.out
 # OS files
 .DS_Store
 Thumbs.db
-EOF
+GITIGNORE
 
 # Add all source files
 git add .
@@ -56,14 +56,15 @@ git commit -m "Initial commit: TensorFlow Probability flows training pipeline
 - Comprehensive testing and validation suite
 - Ready for production deployment on 478 particles"
 
-# Create GitHub repo and push (replace with your actual repo name)
-echo "📚 Creating GitHub repository..."
-gh repo create caganze/flows-tensorflow --private --description "TensorFlow Probability normalizing flows for astrophysical data"
-
-# Add remote and push
-git remote add origin git@github.com:caganze/flows-tensorflow.git
-git branch -M main
-git push -u origin main
-
-echo "✅ Repository successfully created and pushed to GitHub!"
-echo "📖 Repository URL: https://github.com/caganze/flows-tensorflow"
+echo "📚 Local Git repository created successfully!"
+echo ""
+echo "🔗 Next steps:"
+echo "1. Go to https://github.com/new"
+echo "2. Create a private repository named 'flows-tensorflow'"
+echo "3. Then run these commands:"
+echo ""
+echo "git remote add origin git@github.com:caganze/flows-tensorflow.git"
+echo "git branch -M main"
+echo "git push -u origin main"
+echo ""
+echo "✅ All your code is committed and ready to push!"
