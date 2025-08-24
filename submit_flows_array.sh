@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=tfp_flows
 #SBATCH --partition=gpu
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/train_%A_%a.out
 #SBATCH --error=logs/train_%A_%a.err
 #SBATCH --mem=32GB

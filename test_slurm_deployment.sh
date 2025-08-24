@@ -1,4 +1,24 @@
 #!/bin/bash
+
+# SLURM Deployment Test - Interactive Mode
+# Can be run as: sbatch test_slurm_deployment.sh OR interactively with salloc
+
+# Check if running interactively or as batch job
+if [[ -z "$SLURM_JOB_ID" ]]; then
+    echo "🔥 INTERACTIVE MODE: Requesting GPU nodes for argument testing..."
+    echo "================================================================"
+    echo "Requesting: 4 GPUs, 1 hour, minimal memory for comprehensive testing"
+    echo ""
+    echo "🎯 Purpose: Test the fixed --data_path arguments on compute nodes"
+    echo "📝 Will test: train_tfp_flows.py argument parsing and basic training"
+    echo ""
+    echo "Command: salloc --partition=gpu --gres=gpu:4 --time=01:00:00 --mem=8GB --cpus-per-task=16"
+    
+    salloc --partition=gpu --gres=gpu:4 --time=01:00:00 --mem=8GB --cpus-per-task=16 --job-name="fix_test"
+    exit 0
+fi
+
+# Original SBATCH parameters for reference:
 #SBATCH --job-name=test_slurm_deploy
 #SBATCH --partition=gpu
 #SBATCH --time=00:30:00
@@ -180,7 +200,7 @@ echo "Testing the exact command that will be run in the array job:"
 # This is exactly what submit_flows_array.sh will execute
 TEST_PID=$START_PID
 CMD="python train_tfp_flows.py \\
-    --h5_file \"$H5_FILE\" \\
+    --data_path \"$H5_FILE\" \\
     --particle_pid $TEST_PID \\
     --output_dir \"$OUTPUT_BASE_DIR\" \\
     --epochs 50 \\
@@ -188,8 +208,6 @@ CMD="python train_tfp_flows.py \\
     --learning_rate 1e-3 \\
     --n_layers 4 \\
     --hidden_units 64 \\
-    --generate_samples \\
-    --n_samples 100000 \\
     --use_kroupa_imf \\
     --validation_split 0.2 \\
     --early_stopping_patience 20 \\
@@ -208,7 +226,7 @@ import argparse
 
 # Simulate the argument parser from train_tfp_flows.py
 parser = argparse.ArgumentParser()
-parser.add_argument('--h5_file', required=True)
+parser.add_argument('--data_path', required=True)
 parser.add_argument('--particle_pid', type=int, required=True)
 parser.add_argument('--output_dir', required=True)
 parser.add_argument('--epochs', type=int, default=50)
@@ -225,7 +243,7 @@ parser.add_argument('--reduce_lr_patience', type=int, default=20)
 
 # Test parsing
 test_args = [
-    '--h5_file', '$H5_FILE',
+    '--data_path', '$H5_FILE',
     '--particle_pid', '$TEST_PID', 
     '--output_dir', '$OUTPUT_BASE_DIR',
     '--epochs', '50',

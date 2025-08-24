@@ -51,19 +51,13 @@ mkdir -p logs
 
 # Train the flow
 python train_tfp_flows.py \
-    --h5_file "$H5_FILE" \
+    --data_path "$H5_FILE" \
     --particle_pid $PID \
     --output_dir "$OUTPUT_DIR" \
     --epochs $EPOCHS \
     --batch_size 1024 \
     --learning_rate 1e-3 \
     --n_layers 4 \
-    --hidden_units 64 \
-    --generate_samples \
-    --n_samples $N_SAMPLES \
-    --use_kroupa_imf \
-    --validation_split 0.2 \
-    --early_stopping_patience 20 \
-    --reduce_lr_patience 10
+    --hidden_units 64
 
 echo "🎉 Training completed for PID $PID"

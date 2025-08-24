@@ -1,4 +1,23 @@
 #!/bin/bash
+
+# Deployment Validation Script - Interactive Mode
+# Can be run as: sbatch validate_deployment.sh OR interactively with salloc
+
+# Check if running interactively or as batch job
+if [[ -z "$SLURM_JOB_ID" ]]; then
+    echo "🔥 INTERACTIVE MODE: Requesting GPU nodes..."
+    echo "==============================================="
+    echo "Requesting: 4 GPUs, 1 hour, minimal memory"
+    echo "Command: salloc --partition=gpu --gres=gpu:4 --time=01:00:00 --mem=16GB --cpus-per-task=16"
+    echo ""
+    echo "💡 After allocation, run this script again on the compute node"
+    echo "💡 Or run individual tests manually"
+    
+    salloc --partition=gpu --gres=gpu:4 --time=01:00:00 --mem=16GB --cpus-per-task=16 --job-name="interactive_test"
+    exit 0
+fi
+
+# Original SBATCH parameters for reference:
 #SBATCH --job-name=validate_deploy
 #SBATCH --partition=gpu
 #SBATCH --time=01:00:00
@@ -190,18 +209,14 @@ echo "Testing with PID: $TEST_PID"
 
 # Run a very quick training (2 epochs, 1000 samples)
 python train_tfp_flows.py \
-    --h5_file "$H5_FILE" \
+    --data_path "$H5_FILE" \
     --particle_pid $TEST_PID \
     --output_dir "$OUTPUT_BASE_DIR" \
     --epochs 2 \
     --batch_size 512 \
     --learning_rate 1e-3 \
     --n_layers 2 \
-    --hidden_units 32 \
-    --generate_samples \
-    --n_samples 1000 \
-    --use_kroupa_imf \
-    --validation_split 0.2
+    --hidden_units 32
 
 TRAIN_EXIT_CODE=$?
 

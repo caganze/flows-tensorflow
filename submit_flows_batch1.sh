@@ -109,7 +109,7 @@ for PID in $(seq $START_PID $END_PID); do
     
     # Train the flow for this particle
     python train_tfp_flows.py \
-        --h5_file "$H5_FILE" \
+        --data_path "$H5_FILE" \
         --particle_pid $PID \
         --output_dir "$OUTPUT_BASE_DIR" \
         --epochs $EPOCHS \

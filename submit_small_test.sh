@@ -66,18 +66,14 @@ for PID in $(seq $START_PID $END_PID); do
     echo "--- Testing PID $PID ---"
     
     python train_tfp_flows.py \
-        --h5_file "$H5_FILE" \
+        --data_path "$H5_FILE" \
         --particle_pid $PID \
         --output_dir "$OUTPUT_BASE_DIR" \
         --epochs 10 \
         --batch_size 512 \
         --learning_rate 1e-3 \
         --n_layers 2 \
-        --hidden_units 32 \
-        --generate_samples \
-        --n_samples 5000 \
-        --use_kroupa_imf \
-        --validation_split 0.2
+        --hidden_units 32
     
     if [ $? -eq 0 ]; then
         echo "✅ PID $PID test completed successfully"

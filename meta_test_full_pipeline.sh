@@ -255,17 +255,16 @@ with h5py.File(f'{test_dir}/test_halo.h5', 'w') as f:
 print('✅ Test data created')
 "
 
-# Run minimal training
+# Run minimal training with correct arguments
 python train_tfp_flows.py \
-    --input_file test_data/test_halo.h5 \
+    --data_path test_data/test_halo.h5 \
     --output_dir test_output \
-    --halo_id test \
     --particle_pid 1 \
-    --n_epochs 5 \
+    --epochs 5 \
     --batch_size 128 \
     --learning_rate 0.001 \
-    --n_subsample 1000 \
-    --use_gpu
+    --n_layers 2 \
+    --hidden_units 32
 
 if [ $? -eq 0 ]; then
     echo "✅ Minimal training test: SUCCESS"
