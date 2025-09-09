@@ -12,8 +12,14 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
+# Configure TensorFlow environment before importing
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
 # Set CUDA paths for TensorFlow before importing
 os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=/share/software/user/open/cuda/12.2.0'
+
+# Configure TensorFlow threading early to avoid conflicts
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 
 import numpy as np
 # import pandas as pd  # Removed to avoid GLIBCXX conflicts
@@ -24,9 +30,10 @@ import h5py
 
 # Import our TFP flow implementation
 from tfp_flows_gpu_solution import TFPNormalizingFlow, TFPFlowTrainer
-from kroupa_imf import sample_with_kroupa_imf, get_stellar_mass_from_h5
+from kroupa_imf import sample_with_kroupa_imf
 from optimized_io import save_samples_optimized
 from comprehensive_logging import ComprehensiveLogger
+from symlib_utils import load_particle_data, get_output_paths, validate_symlib_environment
 
 # TFP aliases
 tfd = tfp.distributions
@@ -53,70 +60,40 @@ def setup_gpu():
         print("⚠️ No GPU found - using CPU")
         return False
 
-def load_astrophysical_data(filepath: str, particle_pid: int = None, features: list = None) -> Tuple[tf.Tensor, Dict[str, Any]]:
+def load_symlib_astrophysical_data(halo_id: str, particle_pid: int, suite: str = 'eden') -> Tuple[tf.Tensor, Dict[str, Any]]:
     """
-    Load astrophysical data from HDF5 file
+    Load astrophysical data from symlib simulation
     
     Args:
-        filepath: Path to HDF5 file
-        features: List of feature names to load (default: all 6D phase space)
+        halo_id: Halo ID (e.g., 'Halo268')
+        particle_pid: Particle ID to extract
+        suite: Simulation suite ('eden', 'mwest', 'symphony', 'symphony-hr')
     
     Returns:
-        data: TensorFlow tensor with shape (n_samples, n_features)
+        data: TensorFlow tensor with shape (n_samples, 6) - 6D phase space
         metadata: Dictionary with dataset information
     """
-    if features is None:
-        features = ['pos_x', 'pos_y', 'pos_z', 'vel_x', 'vel_y', 'vel_z']
+    print(f"📊 Loading symlib data: {halo_id} PID {particle_pid} from {suite}")
     
-    print(f"Loading data from: {filepath}")
+    # Validate symlib environment
+    if not validate_symlib_environment():
+        raise RuntimeError("❌ Symlib environment not available")
     
-    with h5py.File(filepath, 'r') as f:
-        # Try different possible dataset structures
-        data_arrays = []
-        
-        if 'pos3' in f and 'vel3' in f:
-            # Format: separate pos3 and vel3 arrays
-            pos3 = f['pos3'][:]  # Shape: (n_samples, 3)
-            vel3 = f['vel3'][:]  # Shape: (n_samples, 3)
-            data = np.concatenate([pos3, vel3], axis=1)  # Shape: (n_samples, 6)
-            
-        elif all(feat in f for feat in features):
-            # Format: individual feature arrays
-            arrays = [f[feat][:] for feat in features]
-            data = np.column_stack(arrays)
-            
-        else:
-            # Try to find any 6D data
-            for key in f.keys():
-                if f[key].shape[-1] == 6:
-                    data = f[key][:]
-                    break
-            else:
-                raise ValueError(f"Could not find 6D data in {filepath}")
-        
-        # Collect metadata
-        metadata = {
-            'n_samples': len(data),
-            'n_features': data.shape[1],
-            'feature_names': features[:data.shape[1]],
-            'data_file': filepath
-        }
-        
-        # Add any HDF5 attributes
-        for attr_name in f.attrs:
-            metadata[attr_name] = f.attrs[attr_name]
-    
-    print(f"✅ Loaded data: {data.shape}")
-    print(f"Features: {metadata['feature_names']}")
+    # Load particle data using symlib
+    data, metadata = load_particle_data(halo_id, particle_pid, suite)
     
     # Convert to TensorFlow tensor
-    data_tf = tf.constant(data, dtype=tf.float32)
+    data_tensor = tf.constant(data, dtype=tf.float32)
     
-    return data_tf, metadata
+    print(f"✅ Loaded {data.shape[0]:,} particles with {data.shape[1]} features")
+    print(f"   Data shape: {data.shape}")
+    print(f"   Stellar mass: {metadata['stellar_mass']:.2e} M☉")
+    
+    return data_tensor, metadata
 
 def load_particle_specific_data(filepath: str, particle_pid: int) -> Tuple[tf.Tensor, Dict[str, Any]]:
     """
-    Load data for a specific particle PID from HDF5 file
+    Load data for a specific particle PID from HDF5 file using symlib
     
     Args:
         filepath: Path to HDF5 file
@@ -128,56 +105,33 @@ def load_particle_specific_data(filepath: str, particle_pid: int) -> Tuple[tf.Te
     """
     print(f"🎯 Loading particle-specific data for PID {particle_pid}")
     
-    # Use the proper H5 reader that handles particle filtering
-    from test_h5_read_single_particle import read_h5_to_dict, extract_particle_data
+    # Use symlib functions
+    from symlib_utils import load_particle_data
     
     try:
-        # Read full H5 file to dictionary
-        print(f"📂 Reading H5 file: {filepath}")
-        data_dict = read_h5_to_dict(filepath)
-        print(f"📊 H5 file contains {len(data_dict)} datasets: {list(data_dict.keys())[:5]}...")
+        # Extract halo_id and suite from filepath
+        filename = os.path.basename(filepath)
+        if '_' in filename:
+            suite, halo_part = filename.replace('.h5', '').split('_', 1)
+            halo_id = halo_part.replace('halo', 'Halo')
+        else:
+            raise ValueError(f"Could not parse halo_id and suite from filename: {filename}")
         
-        # Extract data for specific particle
-        print(f"🔍 Extracting data for PID {particle_pid}...")
-        particle_data = extract_particle_data(data_dict, particle_pid)
+        print(f"📊 Parsed: suite={suite}, halo_id={halo_id}")
         
-        if len(particle_data) == 0:
+        # Use symlib to load particle data
+        data, metadata = load_particle_data(halo_id, particle_pid, suite)
+        
+        if len(data) == 0:
             raise ValueError(f"❌ No data found for particle PID {particle_pid}")
         
         # Ensure we have 6D data (pos + vel)
-        if particle_data.shape[1] >= 6:
-            data = particle_data[:, :6]  # Take first 6 columns (pos + vel)
+        if data.shape[1] >= 6:
+            data = data[:, :6]  # Take first 6 columns (pos + vel)
         else:
-            raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {particle_data.shape}")
+            raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {data.shape}")
         
         print(f"✅ Extracted {len(data):,} particles for PID {particle_pid}")
-        
-        # Get stellar mass for this particle
-        stellar_mass = None
-        try:
-            from kroupa_imf import get_stellar_mass_from_h5
-            stellar_mass = get_stellar_mass_from_h5(data_dict, particle_pid)
-            print(f"⭐ Stellar mass for PID {particle_pid}: {stellar_mass:.2e} M☉")
-        except Exception as e:
-            print(f"⚠️  Could not get stellar mass, using default: {e}")
-            stellar_mass = 1e8  # Default fallback
-        
-        # Create comprehensive metadata
-        metadata = {
-            'filepath': filepath,
-            'particle_pid': particle_pid,
-            'n_samples': len(data),
-            'n_features': data.shape[1],
-            'data_shape': data.shape,
-            'data_min': data.min(axis=0),
-            'data_max': data.max(axis=0),
-            'data_mean': data.mean(axis=0),
-            'data_std': data.std(axis=0),
-            'stellar_mass': stellar_mass,
-            'h5_datasets': list(data_dict.keys()),
-            'file_size_mb': os.path.getsize(filepath) / (1024 * 1024),
-            'load_timestamp': time.time()
-        }
         
         # Convert to TensorFlow tensor
         data_tensor = tf.constant(data, dtype=tf.float32)
@@ -279,6 +233,258 @@ def split_data(
 
 # Plotting function removed - not needed for production training
 
+def save_model_only(
+    flow: TFPNormalizingFlow,
+    trainer: TFPFlowTrainer,
+    preprocessing_stats: Dict[str, tf.Tensor],
+    metadata: Dict[str, Any],
+    output_dir: str,
+    model_name: str = "tfp_flow"
+) -> str:
+    """Save only the trained model and metadata (no sampling)"""
+    
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Save flow model (both variables and flow object)
+    model_path = output_path / f"{model_name}.npz"
+    
+    # Get all trainable variables
+    variables = flow.trainable_variables
+    
+    # Create a dictionary to save each variable separately
+    save_dict = {}
+    
+    # Save model configuration
+    save_dict['config'] = np.array({
+        'input_dim': flow.input_dim,
+        'n_layers': flow.n_layers,
+        'hidden_units': flow.hidden_units,
+        'activation': flow.activation,
+        'name': flow.name
+    }, dtype=object)
+    
+    # Save each variable individually with a unique key
+    for i, var in enumerate(variables):
+        var_array = var.numpy()
+        save_dict[f'variable_{i}'] = var_array
+        save_dict[f'variable_{i}_shape'] = np.array(var_array.shape)
+        save_dict[f'variable_{i}_name'] = var.name
+    
+    # Save number of variables for loading
+    save_dict['n_variables'] = len(variables)
+    
+    # Note: We can't save the flow object directly due to pickle limitations
+    # Instead, we save enough info to reconstruct it in load_flow_from_model()
+    
+    # Use compressed format for efficiency
+    np.savez_compressed(str(model_path), **save_dict)
+    
+    # Save preprocessing statistics
+    preprocessing_path = output_path / f"{model_name}_preprocessing.npz"
+    np.savez(
+        preprocessing_path,
+        **{k: v.numpy() if isinstance(v, tf.Tensor) else v 
+           for k, v in preprocessing_stats.items()}
+    )
+    
+    # Save training results
+    def make_json_serializable(obj):
+        """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
+        if hasattr(obj, 'numpy'):
+            return float(obj.numpy())
+        elif isinstance(obj, (np.floating, np.integer)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, list):
+            return [make_json_serializable(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        else:
+            return obj
+    
+    results = {
+        'train_losses': [float(loss) for loss in trainer.train_losses],
+        'val_losses': [float(loss) for loss in trainer.val_losses],
+        'metadata': make_json_serializable(metadata),
+        'model_config': {
+            'input_dim': int(flow.input_dim),
+            'n_layers': int(flow.n_layers),
+            'hidden_units': int(flow.hidden_units),
+            'activation': str(flow.activation)
+        }
+    }
+    
+    results_path = output_path / f"{model_name}_results.json"
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    print(f"✅ Model saved to {output_path}")
+    print(f"  Model: {model_path}")
+    print(f"  Preprocessing: {preprocessing_path}")
+    print(f"  Results: {results_path}")
+    
+    return str(model_path)
+
+def load_flow_from_model(model_path: str) -> TFPNormalizingFlow:
+    """Load a flow model from saved file by reconstructing from config and variables"""
+    try:
+        # Load the saved data
+        data = np.load(model_path, allow_pickle=True)
+        
+        # Reconstruct flow from configuration (we can't save the flow object due to pickle limitations)
+        config = data['config'].item()
+        flow = TFPNormalizingFlow(
+            input_dim=config['input_dim'],
+            n_layers=config['n_layers'],
+            hidden_units=config['hidden_units'],
+            activation=config['activation'],
+            name=config['name']
+        )
+        
+        # Force initialization of the flow by running a dummy forward pass
+        # This ensures all variables are created before we try to load them
+        dummy_input = tf.zeros((1, config['input_dim']), dtype=tf.float32)
+        _ = flow.log_prob(dummy_input)  # This creates all the variables
+        
+        # Load the saved variables
+        n_variables = int(data['n_variables'])
+        variables = flow.trainable_variables
+        
+        if len(variables) != n_variables:
+            raise ValueError(f"Model structure mismatch: expected {n_variables} variables, got {len(variables)}")
+        
+        # Assign the loaded values to variables
+        for i, var in enumerate(variables):
+            loaded_value = data[f'variable_{i}']
+            var.assign(loaded_value)
+        
+        print(f"✅ Flow reconstructed from {model_path}")
+        print(f"   Loaded {len(variables)} variables")
+        return flow
+        
+    except Exception as e:
+        print(f"❌ Error loading flow model: {e}")
+        raise
+
+def generate_samples_separately(
+    flow: Optional[TFPNormalizingFlow] = None,
+    model_path: Optional[str] = None,
+    preprocessing_stats: Optional[Dict[str, tf.Tensor]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    output_dir: Optional[str] = None,
+    model_name: str = "tfp_flow",
+    n_samples: Optional[int] = None
+) -> str:
+    """Generate samples separately from saved model"""
+    
+    # Load flow from model_path if not provided
+    if flow is None:
+        if model_path is None:
+            raise ValueError("Either flow or model_path must be provided")
+        flow = load_flow_from_model(model_path)
+    
+    # Load preprocessing stats if not provided
+    if preprocessing_stats is None:
+        if model_path is None:
+            raise ValueError("preprocessing_stats must be provided if model_path is not given")
+        preprocessing_path = model_path.replace('.npz', '_preprocessing.npz')
+        preprocessing_data = np.load(preprocessing_path, allow_pickle=True)
+        preprocessing_stats = {k: tf.constant(v) for k, v in preprocessing_data.items()}
+    
+    # Load metadata if not provided
+    if metadata is None:
+        if model_path is None:
+            raise ValueError("metadata must be provided if model_path is not given")
+        # Try to load from results file
+        results_path = model_path.replace('.npz', '_results.json')
+        if Path(results_path).exists():
+            with open(results_path, 'r') as f:
+                results = json.load(f)
+                metadata = results.get('metadata', {})
+        else:
+            raise ValueError(f"Metadata not found at {results_path}")
+    
+    # Set output_dir from model_path if not provided
+    if output_dir is None:
+        if model_path is None:
+            raise ValueError("output_dir must be provided if model_path is not given")
+        output_dir = str(Path(model_path).parent)
+    
+    output_path = Path(output_dir)
+    
+    # MANDATORY: Use Kroupa IMF for all sample generation
+    stellar_mass = metadata.get('stellar_mass', None)
+    
+    # Kroupa IMF is MANDATORY - validate requirements
+    if stellar_mass is None:
+        raise ValueError("❌ No stellar mass found in metadata. Kroupa IMF requires stellar mass.")
+    
+    # Use Kroupa IMF for realistic sampling - NO FALLBACKS
+    print(f"🌟 Using MANDATORY Kroupa IMF sampling for stellar mass: {stellar_mass:.2e} M☉")
+    samples, masses = sample_with_kroupa_imf(
+        flow=flow,
+        n_target_mass=stellar_mass,
+        preprocessing_stats=preprocessing_stats,
+        seed=42
+    )
+    n_samples = len(samples)
+    
+    # Validate Kroupa sampling results - fail hard if any issues
+    if masses is None or len(masses) == 0:
+        raise ValueError("❌ Kroupa IMF sampling failed - no masses generated")
+    
+    if np.any(np.isnan(samples.numpy())):
+        raise ValueError("❌ Kroupa IMF sampling produced NaN samples")
+    
+    if np.any(np.isnan(masses)):
+        raise ValueError("❌ Kroupa IMF sampling produced NaN masses")
+    
+    print(f"✅ Kroupa sampling successful: {n_samples:,} samples with valid masses")
+    
+    # Use optimized I/O strategy based on sample count
+    samples_dir = Path(str(output_path).replace('trained_flows', 'samples'))
+    
+    try:
+        # Prepare comprehensive metadata for samples
+        samples_metadata = {
+            **metadata,  # Include all existing metadata
+            'n_samples': n_samples,
+            'model_name': model_name,
+            'created_timestamp': time.time(),
+            'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'tensorflow_version': tf.__version__,
+            'has_kroupa_masses': masses is not None
+        }
+        
+        if masses is not None:
+            samples_metadata.update({
+                'total_stellar_mass': float(np.sum(masses)),
+                'mean_stellar_mass': float(np.mean(masses))
+            })
+        
+        # Use optimized save strategy (automatically chooses HDF5 vs NPZ based on size)
+        saved_files = save_samples_optimized(
+            samples=samples,
+            masses=masses,
+            output_dir=str(samples_dir),
+            model_name=model_name,
+            metadata=samples_metadata
+        )
+        
+        print(f"✅ Saved {n_samples:,} samples using optimized I/O:")
+        for file_type, file_path in saved_files.items():
+            print(f"  {file_type.upper()}: {file_path}")
+        if masses is not None:
+            print(f"  Kroupa masses: ✅ included")
+        
+        return str(samples_dir)
+        
+    except Exception as e:
+        print(f"⚠️ Sample generation failed: {e}")
+        raise
+
 def save_model_and_results(
     flow: TFPNormalizingFlow,
     trainer: TFPFlowTrainer,
@@ -288,6 +494,7 @@ def save_model_and_results(
     model_name: str = "tfp_flow",
     generate_samples: bool = True,
     n_samples: Optional[int] = None  # If None, will be calculated adaptively
+    # use_kroupa_imf removed - now MANDATORY and always True
 ):
     """Save trained model and results"""
     
@@ -340,40 +547,34 @@ def save_model_and_results(
     
     # Generate and save large sample set
     if generate_samples:
-        # Use Kroupa IMF to determine realistic sample count based on stellar mass
-        try:
-            stellar_mass = metadata.get('stellar_mass', None)
-            if stellar_mass is None:
-                print("⚠️ No stellar mass in metadata, using adaptive sampling fallback")
-                # Fallback: adaptive strategy
-                n_training_data = metadata.get('n_training_data', 50000)
-                if n_training_data < 10000:
-                    multiplier = 5
-                elif n_training_data < 50000:
-                    multiplier = 3
-                else:
-                    multiplier = 2
-                n_samples = min(500000, max(50000, n_training_data * multiplier))
-                samples = flow.sample(n_samples, seed=42)
-                masses = None  # No masses generated in fallback
-            else:
-                # Use Kroupa IMF for realistic sampling
-                print(f"🌟 Using Kroupa IMF sampling for stellar mass: {stellar_mass:.2e} M☉")
-                samples, masses = sample_with_kroupa_imf(
-                    flow=flow,
-                    n_target_mass=stellar_mass,
-                    preprocessing_stats=preprocessing_stats,
-                    seed=42
-                )
-                n_samples = len(samples)
-                
-        except Exception as e:
-            print(f"⚠️ Kroupa sampling failed: {e}, using fallback")
-            # Fallback to simple sampling
-            if n_samples is None:
-                n_samples = 100000
-            samples = flow.sample(n_samples, seed=42)
-            masses = None
+        # MANDATORY: Use Kroupa IMF for all sample generation
+        stellar_mass = metadata.get('stellar_mass', None)
+        
+        # Kroupa IMF is MANDATORY - validate requirements
+        if stellar_mass is None:
+            raise ValueError("❌ No stellar mass found in metadata. Kroupa IMF requires stellar mass.")
+        
+        # Use Kroupa IMF for realistic sampling - NO FALLBACKS
+        print(f"🌟 Using MANDATORY Kroupa IMF sampling for stellar mass: {stellar_mass:.2e} M☉")
+        samples, masses = sample_with_kroupa_imf(
+            flow=flow,
+            n_target_mass=stellar_mass,
+            preprocessing_stats=preprocessing_stats,
+            seed=42
+        )
+        n_samples = len(samples)
+        
+        # Validate Kroupa sampling results - fail hard if any issues
+        if masses is None or len(masses) == 0:
+            raise ValueError("❌ Kroupa IMF sampling failed - no masses generated")
+        
+        if np.any(np.isnan(samples.numpy())):
+            raise ValueError("❌ Kroupa IMF sampling produced NaN samples")
+        
+        if np.any(np.isnan(masses)):
+            raise ValueError("❌ Kroupa IMF sampling produced NaN masses")
+        
+        print(f"✅ Kroupa sampling successful: {n_samples:,} samples with valid masses")
         
         # Use optimized I/O strategy based on sample count
         samples_dir = Path(str(output_path).replace('trained_flows', 'samples'))
@@ -450,8 +651,9 @@ def save_model_and_results(
     return str(model_path), str(samples_dir) if generate_samples else None
 
 def train_and_save_flow(
-    h5_file: str,
+    halo_id: str,
     particle_pid: int,
+    suite: str,
     output_dir: str,
     epochs: int = 50,
     batch_size: int = 1024,
@@ -460,7 +662,7 @@ def train_and_save_flow(
     hidden_units: int = 64,
     generate_samples: bool = True,
     n_samples: int = 100000,
-    use_kroupa_imf: bool = True,
+    # use_kroupa_imf removed - now MANDATORY and always True
     validation_split: float = 0.2,
     early_stopping_patience: int = 50,
     reduce_lr_patience: int = 20
@@ -484,7 +686,7 @@ def train_and_save_flow(
     logger.info(f"  Hidden units: {hidden_units}")
     logger.info(f"  Generate samples: {generate_samples}")
     logger.info(f"  N samples: {n_samples}")
-    logger.info(f"  Use Kroupa IMF: {use_kroupa_imf}")
+    logger.info(f"  Use Kroupa IMF: TRUE (MANDATORY)")
     
     try:
         # Set up GPU
@@ -493,7 +695,7 @@ def train_and_save_flow(
         
         # Load and preprocess data for specific particle
         logger.info(f"📊 Loading data for PID {particle_pid}...")
-        data, metadata = load_particle_specific_data(h5_file, particle_pid)
+        data, metadata = load_symlib_astrophysical_data(halo_id, particle_pid, suite)
         
         if len(data) == 0:
             raise ValueError(f"No data found for particle PID {particle_pid}")
@@ -543,22 +745,38 @@ def train_and_save_flow(
             'batch_size': batch_size,
             'learning_rate': learning_rate,
             'validation_split': validation_split,
-            'use_kroupa_imf': use_kroupa_imf,
+            'use_kroupa_imf': True,  # MANDATORY - always True
             'n_samples_requested': n_samples if generate_samples else 0
         }
         
-        # Save model and generate samples
-        logger.info("💾 Saving model and generating samples...")
-        model_path, samples_path = save_model_and_results(
+        # Save model first (critical - don't lose trained model)
+        logger.info("💾 Saving trained model...")
+        model_path = save_model_only(
             flow=flow,
             trainer=trainer,
             preprocessing_stats=preprocessing_stats,
             metadata=enhanced_metadata,
             output_dir=output_dir,
-            model_name=f"model_pid{particle_pid}",
-            generate_samples=generate_samples,
-            n_samples=n_samples
+            model_name=f"model_pid{particle_pid}"
         )
+        
+        # Generate samples separately (can be done later if memory issues)
+        samples_path = None
+        if generate_samples:
+            logger.info("🎲 Generating samples...")
+            try:
+                samples_path = generate_samples_separately(
+                    flow=flow,
+                    preprocessing_stats=preprocessing_stats,
+                    metadata=enhanced_metadata,
+                    output_dir=output_dir,
+                    model_name=f"model_pid{particle_pid}",
+                    n_samples=n_samples
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Sample generation failed: {e}")
+                logger.info("📋 Model saved successfully - samples can be generated later")
+                samples_path = None
         
         logger.info(f"✅ Training completed for PID {particle_pid}")
         logger.log_metric("final_training_loss", trainer.train_losses[-1])
@@ -576,10 +794,11 @@ def train_and_save_flow(
 def main():
     parser = argparse.ArgumentParser(description="Train TensorFlow Probability normalizing flows")
     
-    # Data arguments
-    parser.add_argument("--data_path", required=True, help="Path to HDF5 data file")
-    parser.add_argument("--particle_pid", type=int, help="Specific particle ID to process")
-    parser.add_argument("--output_dir", required=True, help="Output directory for model and results")
+    # Data arguments (symlib)
+    parser.add_argument("--halo_id", required=True, help="Halo ID (e.g., Halo268)")
+    parser.add_argument("--particle_pid", type=int, required=True, help="Specific particle ID to process")
+    parser.add_argument("--suite", default="eden", help="Simulation suite name (default: eden)")
+    parser.add_argument("--output_dir", help="Output directory for model and results (default: /oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output/)")
     
     # Model arguments
     parser.add_argument("--n_layers", type=int, default=4, help="Number of flow layers")
@@ -596,21 +815,46 @@ def main():
     parser.add_argument("--no_standardize", action="store_true", help="Skip data standardization")
     parser.add_argument("--clip_outliers", type=float, default=5.0, help="Outlier clipping threshold")
     
+    # Sampling arguments
+    parser.add_argument("--generate-samples", action="store_true", default=True, help="Generate samples after training")
+    parser.add_argument("--no-generate-samples", dest="generate_samples", action="store_false", help="Skip sample generation")
+    # MANDATORY: Kroupa IMF is always enabled - no option to disable
+    parser.add_argument("--use_kroupa_imf", action="store_true", default=True, help="Use Kroupa IMF for sample generation (MANDATORY - always enabled)")
+    # Removed --no-kroupa-imf option to enforce Kroupa IMF usage
+    parser.add_argument("--n_samples", type=int, default=100000, help="Number of samples to generate (overridden by Kroupa IMF)")
+    
     # Other arguments
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--model_name", default="tfp_flow", help="Model name for saving")
     
     args = parser.parse_args()
     
-    print("🚀 TensorFlow Probability Flow Training")
+    # Set default output directory if not provided
+    if not args.output_dir:
+        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output/"
+    
+    # MANDATORY: Enforce Kroupa IMF usage
+    if not args.use_kroupa_imf:
+        raise ValueError("❌ CRITICAL: Kroupa IMF is MANDATORY for all training runs. Remove --no-kroupa-imf if used.")
+    
+    print("🚀 TensorFlow Probability Flow Training (Symlib)")
     print("=" * 50)
-    print(f"Data path: {args.data_path}")
+    print(f"Halo ID: {args.halo_id}")
+    print(f"Particle PID: {args.particle_pid}")
+    print(f"Suite: {args.suite}")
     print(f"Output directory: {args.output_dir}")
-    if args.particle_pid:
-        print(f"Particle PID: {args.particle_pid}")
     print(f"Model config: {args.n_layers} layers, {args.hidden_units} hidden units")
     print(f"Training config: {args.epochs} epochs, batch size {args.batch_size}")
+    print("🌟 Kroupa IMF: MANDATORY (enforced)")
     print()
+    
+    # Configure TensorFlow threading early to avoid conflicts
+    try:
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+    except RuntimeError:
+        # TensorFlow already initialized, skip configuration
+        pass
     
     # Set seeds for reproducibility
     tf.random.set_seed(args.seed)
@@ -623,17 +867,18 @@ def main():
     if args.particle_pid:
         print(f"🎯 Training flow for particle PID {args.particle_pid}")
         model_path, samples_path = train_and_save_flow(
-            h5_file=args.data_path,
+            halo_id=args.halo_id,
             particle_pid=args.particle_pid,
+            suite=args.suite,
             output_dir=args.output_dir,
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             n_layers=args.n_layers,
             hidden_units=args.hidden_units,
-            generate_samples=True,
-            n_samples=100000,
-            use_kroupa_imf=True,
+            generate_samples=args.generate_samples,
+            n_samples=args.n_samples,
+            # use_kroupa_imf removed - now MANDATORY and always True
             validation_split=0.2,
             early_stopping_patience=50,
             reduce_lr_patience=20
@@ -646,7 +891,7 @@ def main():
     
     # Load and preprocess data
     print("📊 Loading and preprocessing data...")
-    data, metadata = load_astrophysical_data(args.data_path)
+    data, metadata = load_symlib_astrophysical_data(args.halo_id, args.particle_pid, args.suite)
     
     processed_data, preprocessing_stats = preprocess_data(
         data, 
@@ -718,6 +963,7 @@ def main():
         metadata=metadata,
         output_dir=args.output_dir,
         model_name=args.model_name
+        # use_kroupa_imf removed - now MANDATORY and always True
     )
     
     # Plot training curves

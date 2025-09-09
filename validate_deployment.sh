@@ -130,9 +130,11 @@ echo "📁 Test 6: File Path Discovery"
 echo "------------------------------"
 find_h5_file() {
     local search_paths=(
-        "/scratch/groups/aganze/christianaganze/symphony_mocks/"
         "/oak/stanford/orgs/kipac/users/caganze/milkyway-eden-mocks/"
-        "/scratch/groups/aganze/christianaganze/"
+        "/oak/stanford/orgs/kipac/users/caganze/symphony_mocks/"
+        "/oak/stanford/orgs/kipac/users/caganze/milkyway-hr-mocks/"
+        "/oak/stanford/orgs/kipac/users/caganze/milkywaymocks/"
+        "/oak/stanford/orgs/kipac/users/caganze/"
     )
     
     for path in "${search_paths[@]}"; do
@@ -152,7 +154,7 @@ find_h5_file() {
         fi
     done
     echo "⚠ Using fallback H5 file"
-    echo "/scratch/groups/aganze/christianaganze/symphony_mocks/all_in_one.h5"
+    echo "/oak/stanford/orgs/kipac/users/caganze/symphony_mocks/all_in_one.h5"
 }
 
 H5_FILE=$(find_h5_file)
@@ -188,7 +190,7 @@ fi
 echo
 echo "📂 Test 7: Output Directory Creation"
 echo "------------------------------------"
-OUTPUT_BASE_DIR="/scratch/groups/aganze/christianaganze/tfp_flows_validation"
+OUTPUT_BASE_DIR="/oak/stanford/orgs/kipac/users/caganze/tfp_flows_validation"
 mkdir -p "$OUTPUT_BASE_DIR"
 mkdir -p "$OUTPUT_BASE_DIR/trained_flows"
 mkdir -p "$OUTPUT_BASE_DIR/samples"
@@ -207,24 +209,54 @@ echo "------------------------------"
 TEST_PID=$START_PID
 echo "Testing with PID: $TEST_PID"
 
+# Extract data source and halo ID from H5 file
+FILENAME=$(basename "$H5_FILE")
+HALO_ID=$(echo "$FILENAME" | sed 's/.*Halo\([0-9][0-9]*\).*/\1/')
+
+# Determine data source from filename
+if [[ "$FILENAME" == *"eden_scaled"* ]]; then
+    DATA_SOURCE="eden"
+elif [[ "$FILENAME" == *"symphonyHR_scaled"* ]]; then
+    DATA_SOURCE="symphony-hr"
+elif [[ "$FILENAME" == *"symphony_scaled"* ]]; then
+    DATA_SOURCE="symphony"
+else
+    DATA_SOURCE="unknown"
+fi
+
+# Handle fallback file (all_in_one.h5) - use default structure
+if [[ "$FILENAME" == "all_in_one.h5" ]] || [[ "$HALO_ID" == "$FILENAME" ]]; then
+    echo "⚠️  Using fallback file, setting default halo structure"
+    HALO_ID="000"
+    DATA_SOURCE="symphony"
+fi
+
+# Create hierarchical output directory
+MODEL_DIR="$OUTPUT_BASE_DIR/trained_flows/${DATA_SOURCE}/halo${HALO_ID}"
+mkdir -p "$MODEL_DIR"
+
+echo "📁 Data source: $DATA_SOURCE"
+echo "📁 Halo ID: $HALO_ID"
+echo "📁 Model dir: $MODEL_DIR"
+
 # Run a very quick training (2 epochs, 1000 samples)
 python train_tfp_flows.py \
     --data_path "$H5_FILE" \
     --particle_pid $TEST_PID \
-    --output_dir "$OUTPUT_BASE_DIR" \
+    --output_dir "$MODEL_DIR" \
     --epochs 2 \
     --batch_size 512 \
     --learning_rate 1e-3 \
     --n_layers 2 \
-    --hidden_units 32
+    --hidden_units 32 \
+    --generate-samples \
 
 TRAIN_EXIT_CODE=$?
 
 if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "✅ Quick training test PASSED"
     
-    # Verify outputs
-    MODEL_DIR="$OUTPUT_BASE_DIR/trained_flows/model_pid${TEST_PID}"
+    # Verify outputs (MODEL_DIR already set above)
     if [[ -f "$MODEL_DIR/model_pid${TEST_PID}.npz" ]]; then
         echo "✓ Model file created"
     else

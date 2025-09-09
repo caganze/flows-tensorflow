@@ -4,9 +4,27 @@ Kroupa Initial Mass Function (IMF) implementation for TensorFlow
 Translates JAX version to TensorFlow for realistic stellar mass sampling
 """
 
+import os
 import numpy as np
+
+# Configure TensorFlow for CPU-only to prevent hanging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
+os.environ['CUDA_VISIBLE_DEVICES'] = ''   # Hide GPUs to force CPU
+
 import tensorflow as tf
 from typing import Tuple
+
+# Configure TensorFlow for minimal resource usage
+# Use environment variables to avoid RuntimeError if TF already initialized
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
+
+# Try to configure GPU visibility (may fail if TF already initialized)
+try:
+    tf.config.set_visible_devices([], 'GPU')  # Disable GPU
+except RuntimeError:
+    # TensorFlow already initialized, skip configuration
+    pass
 
 def kroupa_masses(nsample: int, seed: int = 42) -> np.ndarray:
     """Generate Kroupa IMF masses in solar masses.
@@ -66,7 +84,7 @@ def estimate_ntot(M_target: float, ntest: int = 100000, seed: int = 42) -> Tuple
     return ntot, mean_mass
 
 def sample_with_kroupa_imf(flow, n_target_mass: float, preprocessing_stats: dict, 
-                          seed: int = 42, max_samples: int = 1000000) -> Tuple[tf.Tensor, np.ndarray]:
+                          seed: int = 42) -> Tuple[tf.Tensor, np.ndarray]:
     """Sample from flow using Kroupa IMF to determine realistic particle count.
     
     Args:
@@ -74,7 +92,6 @@ def sample_with_kroupa_imf(flow, n_target_mass: float, preprocessing_stats: dict
         n_target_mass: Total stellar mass to sample (solar masses)
         preprocessing_stats: Dict with 'mean' and 'std' for unstandardization
         seed: Random seed
-        max_samples: Maximum number of particles to generate (safety limit)
         
     Returns:
         Tuple of (samples_6d, masses) where:
@@ -88,21 +105,103 @@ def sample_with_kroupa_imf(flow, n_target_mass: float, preprocessing_stats: dict
     np.random.seed(seed)
     n_poisson = int(np.random.poisson(ntot))
     n_poisson = max(n_poisson, 1)  # At least 1 particle
-    n_poisson = min(n_poisson, max_samples)  # Safety cap
     
     print(f"📊 Kroupa IMF sampling:")
     print(f"   Target stellar mass: {n_target_mass:.2e} M☉")
     print(f"   Estimated particles: {ntot:,} (mean mass: {mean_mass:.3f} M☉)")
     print(f"   Poisson sample: {n_poisson:,} particles")
     
-    # Sample from the trained flow
+    # Validate flow model before sampling
+    print(f"   🔍 Validating flow model...")
+    try:
+        # Test with a small sample first
+        test_samples = flow.sample(10, seed=seed + 999)
+        test_has_nan = tf.reduce_any(tf.math.is_nan(test_samples))
+        test_has_inf = tf.reduce_any(tf.math.is_inf(test_samples))
+        
+        if test_has_nan.numpy() or test_has_inf.numpy():
+            raise ValueError("❌ Flow model produces NaN/Inf even in test sampling - model is corrupted")
+            
+        print(f"   ✅ Flow model validation passed")
+        
+    except Exception as e:
+        print(f"   ❌ Flow model validation failed: {e}")
+        raise ValueError(f"❌ Flow model is not ready for sampling: {e}")
+    
+    # Sample from the trained flow using batching for large particle counts
     tf.random.set_seed(seed)
-    samples_standardized = flow.sample(n_poisson, seed=seed)
+    
+    print(f"   🔍 Sampling {n_poisson:,} particles from trained flow...")
+    
+    # Use batching for large particle counts to avoid memory/NaN issues
+    batch_size = min(50000, n_poisson)  # Max 50K per batch
+    n_batches = (n_poisson + batch_size - 1) // batch_size
+    
+    if n_batches > 1:
+        print(f"   📦 Using {n_batches} batches of {batch_size:,} particles each")
+    
+    try:
+        all_samples = []
+        for batch_idx in range(n_batches):
+            batch_start = batch_idx * batch_size
+            batch_end = min(batch_start + batch_size, n_poisson)
+            batch_size_actual = batch_end - batch_start
+            
+            if n_batches > 1:
+                print(f"   🔄 Batch {batch_idx + 1}/{n_batches}: {batch_size_actual:,} particles")
+            
+            batch_samples = flow.sample(batch_size_actual, seed=seed + batch_idx)
+            
+            # Check for NaN/Inf in this batch
+            has_nan = tf.reduce_any(tf.math.is_nan(batch_samples))
+            has_inf = tf.reduce_any(tf.math.is_inf(batch_samples))
+            
+            if has_nan.numpy():
+                print(f"   ❌ CRITICAL: Batch {batch_idx + 1} produced NaN samples!")
+                raise ValueError("❌ Flow sampling produced NaN values - model may be corrupted")
+                
+            if has_inf.numpy():
+                print(f"   ❌ CRITICAL: Batch {batch_idx + 1} produced Inf samples!")
+                raise ValueError("❌ Flow sampling produced Inf values - model may be corrupted")
+            
+            all_samples.append(batch_samples)
+        
+        # Concatenate all batches
+        samples_standardized = tf.concat(all_samples, axis=0)
+        print(f"   ✅ Batched sampling completed: shape {samples_standardized.shape}")
+        
+    except Exception as e:
+        print(f"   ❌ Flow sampling failed: {e}")
+        raise ValueError(f"❌ Flow sampling error: {e}")
     
     # Unstandardize the samples
+    print(f"   🔄 Unstandardizing samples...")
     mean = tf.constant(preprocessing_stats['mean'], dtype=tf.float32)
     std = tf.constant(preprocessing_stats['std'], dtype=tf.float32)
+    
+    # Check preprocessing stats for NaN/Inf
+    mean_has_nan = tf.reduce_any(tf.math.is_nan(mean))
+    std_has_nan = tf.reduce_any(tf.math.is_nan(std))
+    std_has_zero = tf.reduce_any(tf.equal(std, 0.0))
+    
+    if mean_has_nan.numpy() or std_has_nan.numpy():
+        raise ValueError("❌ Preprocessing stats contain NaN values")
+        
+    if std_has_zero.numpy():
+        print(f"   ⚠️ Warning: Some std values are zero, adding small epsilon")
+        std = tf.where(tf.equal(std, 0.0), tf.ones_like(std) * 1e-8, std)
+    
     samples_6d = samples_standardized * std + mean
+    
+    # Final validation of unstandardized samples
+    final_has_nan = tf.reduce_any(tf.math.is_nan(samples_6d))
+    if final_has_nan.numpy():
+        print(f"   ❌ CRITICAL: Unstandardized samples contain NaN!")
+        print(f"   Mean range: [{tf.reduce_min(mean).numpy():.3f}, {tf.reduce_max(mean).numpy():.3f}]")
+        print(f"   Std range: [{tf.reduce_min(std).numpy():.3f}, {tf.reduce_max(std).numpy():.3f}]")
+        raise ValueError("❌ Unstandardization produced NaN values")
+    
+    print(f"   ✅ Unstandardization successful: range [{tf.reduce_min(samples_6d).numpy():.3f}, {tf.reduce_max(samples_6d).numpy():.3f}]")
     
     # Generate corresponding stellar masses using Kroupa IMF
     masses = kroupa_masses(n_poisson, seed=seed + 1000)

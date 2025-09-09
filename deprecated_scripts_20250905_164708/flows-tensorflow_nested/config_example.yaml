@@ -1,0 +1,33 @@
+# Example configuration for TFP flow training
+data:
+  path: "/path/to/your/data.h5"
+  features: ["pos_x", "pos_y", "pos_z", "vel_x", "vel_y", "vel_z"]
+  train_fraction: 0.8
+  val_fraction: 0.1
+
+model:
+  input_dim: 6
+  n_layers: 4
+  hidden_units: 512
+  activation: "relu"
+  use_batch_norm: true
+
+training:
+  epochs: 200
+  batch_size: 1024
+  learning_rate: 0.001
+  validation_freq: 10
+  
+preprocessing:
+  standardize: true
+  clip_outliers: 5.0
+
+output:
+  model_dir: "/path/to/output/models"
+  model_name: "halo_flow"
+
+sampling:
+  n_samples: 1000000
+  chunk_size: 100000
+  generate_masses: true
+  inverse_transform: true

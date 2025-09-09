@@ -1,0 +1,10 @@
+--- train_tfp_flows.py.orig	2025-09-06 19:05:00.000000000 -0700
++++ train_tfp_flows.py	2025-09-06 19:05:00.000000000 -0700
+@@ -441,7 +441,7 @@
+             'batch_size': batch_size,
+             'learning_rate': learning_rate,
+             'validation_split': validation_split,
+-            'use_kroupa_imf': use_kroupa_imf,
++            'use_kroupa_imf': True,  # MANDATORY - always True
+             'n_samples_requested': n_samples if generate_samples else 0
+         }

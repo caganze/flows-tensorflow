@@ -1,0 +1,52 @@
+🧪 DEPLOYMENT VALIDATION
+========================
+Array Task ID: 
+Job ID: 4490901
+Node: sh02-01n29
+GPU: 
+Time: Sat Aug 23 20:32:51 PDT 2025
+User: caganze
+
+🔧 Test 1: Module Loading
+-------------------------
+The following modules were not unloaded:
+  (Use "module --force purge" to unload all):
+
+  1) devel   2) math
+✓ Modules purged
+✓ Math module loaded
+✓ Devel module loaded
+✓ NVHPC module loaded
+✓ CUDA module loaded
+✓ cuDNN module loaded
+
+🌍 Test 2: Environment Setup
+----------------------------
+✓ CUDA environment variables set
+✓ Bashrc sourced
+✓ Conda environment activated
+
+🐍 Test 3: Python Environment
+-----------------------------
+Python: 3.11.13 | packaged by conda-forge | (main, Jun  4 2025, 14:48:23) [GCC 13.3.0]
+2025-08-23 20:36:33.417829: E external/local_xla/xla/stream_executor/cuda/cuda_dnn.cc:9261] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+2025-08-23 20:36:33.438381: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:607] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+2025-08-23 20:36:36.336770: E external/local_xla/xla/stream_executor/cuda/cuda_blas.cc:1515] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2025-08-23 20:36:44.387247: I tensorflow/core/platform/cpu_feature_guard.cc:182] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2025-08-23 20:36:57.647709: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
+TensorFlow: 2.15.0
+TFP: 0.23.0
+NumPy: 1.26.4
+h5py: 3.14.0
+
+🎯 Test 4: GPU Availability
+---------------------------
+2025-08-23 20:37:22.855806: E external/local_xla/xla/stream_executor/cuda/cuda_dnn.cc:9261] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+2025-08-23 20:37:22.855895: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:607] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+2025-08-23 20:37:22.857446: E external/local_xla/xla/stream_executor/cuda/cuda_blas.cc:1515] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2025-08-23 20:37:22.867227: I tensorflow/core/platform/cpu_feature_guard.cc:182] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2025-08-23 20:37:23.902741: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
+GPUs detected: 0
+❌ No GPU detected
