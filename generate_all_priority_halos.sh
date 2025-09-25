@@ -3,16 +3,17 @@
 # Simple script to generate particle lists for all priority halos
 # Uses the existing working generate_symlib_particle_list.py script
 
-set -e
+# Removed set -e to allow script to continue if individual halos fail
+set -u  # Exit on undefined variables
 
 echo "🎯 GENERATING PRIORITY HALO PARTICLE LISTS"
 echo "=========================================="
 echo "Using existing working script: generate_symlib_particle_list.py"
-echo "Priority halos: 939, 718, 270, 925"
+echo "Priority halos: 718, 939, 925"
 echo ""
 
 # Priority halos
-PRIORITY_HALOS=("939" "718" "270" "925")
+PRIORITY_HALOS=("718" "939" "925")
 SUITES=("eden" "symphony")
 
 # Backup existing particle list

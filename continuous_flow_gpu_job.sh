@@ -3,7 +3,7 @@
 #SBATCH --partition=owners
 #SBATCH --time=12:00:00
 #SBATCH --mem=128GB
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --output=logs/continuous_flow_%A_%a.out
 #SBATCH --error=logs/continuous_flow_%A_%a.err
 #SBATCH --array=1-22713%10
@@ -126,8 +126,7 @@ python train_tfp_flows_conditional.py \
     --batch_size $BATCH_SIZE \
     --learning_rate $LEARNING_RATE \
     --n_layers $N_LAYERS \
-    --hidden_units $HIDDEN_UNITS \
-    --generate-samples \
+    --hidden_units $HIDDEN_UNITS
 
 TRAIN_EXIT=$?
 

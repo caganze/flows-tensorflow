@@ -1,38 +1,5 @@
-#!/bin/bash
 
-# 🧠 Smart CPU Submission
-# Automatically filters completed particles and submits only incomplete ones
 
-set -e
-
-# Activate bosque conda environment
-source ~/.bashrc
-conda activate bosque
-
-echo "🧠 SMART CPU SUBMISSION"
-echo "======================="
-echo "🔍 Filters completed particles before submission"
-echo "🚀 Submits only incomplete particles in manageable chunks"
-echo ""
-
-# Default parameters
-CHUNK_SIZE=500
-CONCURRENT=5
-PARTITION="kipac"
-DRY_RUN=false
-VERBOSE=false
-
-show_usage() {
-    echo "Usage: $0 [OPTIONS]"
-    echo ""
-    echo "OPTIONS:"
-    echo "  --chunk-size N      Particles per chunk (default: 500)"
-    echo "  --concurrent N      Max concurrent tasks per chunk (default: 5)"
-    echo "  --partition NAME    SLURM partition (default: normal)"
-    echo "  --verbose           Show detailed filtering progress"
-    echo "  --dry-run           Show what would be submitted without submitting"
-    echo "  --help              Show this help"
-    echo ""
     echo "EXAMPLES:"
     echo "  $0                              # Smart submission with defaults"
     echo "  $0 --chunk-size 200 --concurrent 3  # Smaller chunks, fewer concurrent"

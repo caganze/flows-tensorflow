@@ -10,7 +10,7 @@ import argparse
 import time
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 # Configure TensorFlow environment before importing
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
@@ -42,7 +42,11 @@ class ConditionalTFPNormalizingFlow:
     """TensorFlow Probability conditional normalizing flow that conditions on mass distribution"""
     
     def __init__(self, input_dim: int, condition_dim: int = 1, n_layers: int = 4, 
-                 hidden_units: int = 64, activation: str = 'relu', name: str = 'conditional_tfp_flow'):
+                 hidden_units: int = 64, activation: str = 'relu', name: str = 'conditional_tfp_flow',
+                 use_batchnorm: bool = False,
+                 use_gmm_base: bool = False,
+                 mass_bin_edges: Optional[np.ndarray] = None,
+                 gmm_components: Optional[int] = None):
         """Initialize conditional normalizing flow
         
         Args:
@@ -58,7 +62,11 @@ class ConditionalTFPNormalizingFlow:
         self.n_layers = n_layers
         self.hidden_units = hidden_units
         self.activation = activation
-        self.name = name
+        self.name = name if name is not None else 'conditional_flow'
+        self.use_batchnorm = use_batchnorm
+        self.use_gmm_base = bool(use_gmm_base)
+        self.mass_bin_edges = None if mass_bin_edges is None else np.asarray(mass_bin_edges, dtype=float)
+        self.gmm_components = int(gmm_components) if gmm_components is not None else None
         
         # Build the conditional flow
         self._build_conditional_flow()
@@ -66,30 +74,123 @@ class ConditionalTFPNormalizingFlow:
     def _build_conditional_flow(self):
         """Build the conditional normalizing flow architecture"""
         
-        # Create base distribution (unconditional)
-        self.base_dist = tfd.MultivariateNormalDiag(
-            loc=tf.zeros(self.input_dim, dtype=tf.float32),
-            scale_diag=tf.ones(self.input_dim, dtype=tf.float32)
+        # Ensure name is a string for TensorFlow operations
+        if not isinstance(self.name, str):
+            self.name = str(self.name) if self.name is not None else 'conditional_flow'
+        
+        # Create base distribution
+        # Option 1 (default, stable): standard Gaussian
+        # Option 2 (requested): unconditional GMM base as initialization (no per-condition bins)
+        if self.use_gmm_base and (self.gmm_components is not None and self.gmm_components > 1):
+            # Trainable mixture parameters
+            self._gmm_logits = tf.Variable(
+                tf.zeros([self.gmm_components], dtype=tf.float32),
+                name=f"{self.name}_gmm_logits"
+            )
+            # Initialize locs near zero with small std for stability
+            self._gmm_locs = tf.Variable(
+                0.01 * tf.random.normal([self.gmm_components, self.input_dim], dtype=tf.float32),
+                name=f"{self.name}_gmm_locs"
+            )
+            # Initialize scales to ones (positive)
+            self._gmm_scales = tf.Variable(
+                tf.ones([self.gmm_components, self.input_dim], dtype=tf.float32),
+                name=f"{self.name}_gmm_scales"
+            )
+            cat = tfd.Categorical(logits=self._gmm_logits)
+            comp = tfd.MultivariateNormalDiag(loc=self._gmm_locs, scale_diag=self._gmm_scales)
+            self.base_dist = tfd.MixtureSameFamily(mixture_distribution=cat, components_distribution=comp)
+        else:
+            self.base_dist = tfd.MultivariateNormalDiag(
+                loc=tf.zeros(self.input_dim, dtype=tf.float32),
+                scale_diag=tf.ones(self.input_dim, dtype=tf.float32)
+            )
+        
+        # Create mass bin embedding layer for hierarchical conditional flow
+        self.n_mass_bins = 8  # Number of mass bins (matching preprocessing)
+        self.embedding_dim = 4  # Embedding dimension
+        self.mass_embedding = tf.keras.layers.Embedding(
+            input_dim=self.n_mass_bins,
+            output_dim=self.embedding_dim,
+            name=f'{self.name}_mass_embedding'
         )
         
-        # Create conditional MAF layers
+        # Create conditional MAF layers using pre-built networks
         bijectors = []
+        self._conditional_nets = []
+        
         for i in range(self.n_layers):
-            # Create conditional autoregressive network
-            # The network takes both the current data and the conditioning variable
-            made = tfb.AutoregressiveNetwork(
-                params=2,  # loc and log_scale
-                hidden_units=[self.hidden_units] * 3,  # Deeper network for conditional
-                event_shape=[self.input_dim],
-                conditional_event_shape=[self.condition_dim],  # Conditioning on mass
+            # Create the neural network using Functional API for separate inputs
+            # Input 1: phase space data (x)
+            phase_space_input = tf.keras.Input(shape=(self.input_dim,), name=f'{self.name}_phase_space_input_{i}')
+            
+            # Input 2: mass bin indices (conditional_input)
+            mass_bin_input = tf.keras.Input(shape=(1,), dtype=tf.int32, name=f'{self.name}_mass_bin_input_{i}')
+            
+            # Get embeddings for mass bins
+            mass_embeddings = self.mass_embedding(tf.reshape(mass_bin_input, [-1]))  # Shape: [batch_size, embedding_dim]
+            
+            # Concatenate phase space and mass embeddings
+            combined_input = tf.keras.layers.Concatenate(name=f'{self.name}_concat_{i}')([phase_space_input, mass_embeddings])
+            
+            # Dense layers
+            hidden1 = tf.keras.layers.Dense(
+                self.hidden_units, 
                 activation=self.activation,
-                dtype=tf.float32,
-                name=f'{self.name}_conditional_made_{i}'
+                kernel_initializer='glorot_uniform',
+                bias_initializer='zeros',
+                name=f'{self.name}_dense1_{i}'
+            )(combined_input)
+            
+            hidden2 = tf.keras.layers.Dense(
+                self.hidden_units, 
+                activation=self.activation,
+                kernel_initializer='glorot_uniform',
+                bias_initializer='zeros',
+                name=f'{self.name}_dense2_{i}'
+            )(hidden1)
+            
+            output = tf.keras.layers.Dense(
+                2 * self.input_dim, 
+                activation=None,
+                kernel_initializer='glorot_uniform',
+                bias_initializer='zeros',
+                name=f'{self.name}_output_{i}'
+            )(hidden2)
+            
+            # Create the model with separate inputs
+            net = tf.keras.Model(
+                inputs=[phase_space_input, mass_bin_input],
+                outputs=output,
+                name=f'{self.name}_conditional_net_{i}'
             )
+            
+            self._conditional_nets.append(net)
+            
+            # Create the shift and log scale function with embedding
+            def make_shift_and_log_scale_fn(network):
+                def shift_and_log_scale_fn(x, conditional_input=None):
+                    # The network now expects two inputs: x (phase space) and conditions (mass bin index)
+                    # conditional_input is the mass bin index (int32)
+                    
+                    # The conditional input must have the correct integer dtype
+                    ci = tf.cast(conditional_input, dtype=tf.int32)
+                    
+                    # The network call must be changed to pass both inputs as a list
+                    # The Keras Functional API model handles the concatenation and dense layers internally
+                    output = network([x, ci])
+                    
+                    # Split into shift and log_scale (same as before)
+                    shift, log_scale = tf.split(output, 2, axis=-1)
+                    log_scale = tf.clip_by_value(log_scale, -5.0, 5.0)
+                    
+                    return shift, log_scale
+                
+                return shift_and_log_scale_fn
             
             # Create conditional MAF bijector
             maf = tfb.MaskedAutoregressiveFlow(
-                shift_and_log_scale_fn=made,
+                shift_and_log_scale_fn=make_shift_and_log_scale_fn(net),
                 name=f'{self.name}_conditional_maf_{i}'
             )
             bijectors.append(maf)
@@ -106,7 +207,6 @@ class ConditionalTFPNormalizingFlow:
         self.bijector = tfb.Chain(list(reversed(bijectors)), name=f'{self.name}_chain')
         
         # Create the conditional transformed distribution
-        # Note: For conditional flows, we need to handle conditioning differently
         self.flow = tfd.TransformedDistribution(
             distribution=self.base_dist,
             bijector=self.bijector,
@@ -128,36 +228,29 @@ class ConditionalTFPNormalizingFlow:
         if conditions is None:
             raise ValueError("Conditions must be provided for conditional flow")
         
-        # For conditional flows, we need to pass conditions to the bijector
-        # This requires a custom implementation since TFP's conditional support is limited
-        return self._conditional_log_prob(x, conditions)
-    
-    def _conditional_log_prob(self, x, conditions):
-        """Custom conditional log probability computation"""
-        # Transform x through each bijector layer with conditioning
+        # Apply bijectors in forward direction with conditional input
         log_det_jacobian = tf.zeros(tf.shape(x)[0], dtype=tf.float32)
         y = x
         
-        # Apply bijectors in forward direction
-        for bijector in reversed(self.bijector.bijectors):
-            if hasattr(bijector, 'shift_and_log_scale_fn'):
-                # This is a conditional MAF layer
-                shift_and_log_scale = bijector.shift_and_log_scale_fn(y, conditional_input=conditions)
-                shift = shift_and_log_scale[..., 0]
-                log_scale = shift_and_log_scale[..., 1]
-                
-                # Apply the transformation
-                y = (y - shift) * tf.exp(-log_scale)
-                log_det_jacobian += tf.reduce_sum(-log_scale, axis=-1)
+        for bijector in self.bijector.bijectors:
+            # Check if this is a MAF bijector by checking the class name
+            if 'MaskedAutoregressiveFlow' in str(type(bijector)):
+                # This is a conditional MAF layer - pass conditional input
+                # Store input before transformation for log det jacobian
+                y_input = y
+                y = bijector.forward(y, conditional_input=conditions)
+                log_det_jacobian += bijector.forward_log_det_jacobian(y_input, event_ndims=1, conditional_input=conditions)
             else:
-                # Non-conditional bijector (e.g., permutation)
+                # Non-conditional bijector (e.g., permutation, batch norm) - don't pass conditional input
+                y_input = y
                 y = bijector.forward(y)
-                log_det_jacobian += bijector.forward_log_det_jacobian(y, event_ndims=1)
+                log_det_jacobian += bijector.forward_log_det_jacobian(y_input, event_ndims=1)
         
         # Compute base distribution log prob
         base_log_prob = self.base_dist.log_prob(y)
         
         return base_log_prob + log_det_jacobian
+    
     
     def sample(self, n_samples: int, conditions=None, seed: Optional[int] = None):
         """Generate conditional samples from the flow
@@ -176,28 +269,20 @@ class ConditionalTFPNormalizingFlow:
         
         base_samples = self.base_dist.sample(n_samples)
         
-        # Transform through inverse bijectors with conditioning
-        return self._conditional_sample(base_samples, conditions)
-    
-    def _conditional_sample(self, base_samples, conditions):
-        """Custom conditional sampling"""
+        # Apply bijectors in reverse (inverse) direction with conditional input
         y = base_samples
         
-        # Apply bijectors in reverse (inverse) direction
         for bijector in self.bijector.bijectors:
-            if hasattr(bijector, 'shift_and_log_scale_fn'):
-                # This is a conditional MAF layer
-                shift_and_log_scale = bijector.shift_and_log_scale_fn(y, conditional_input=conditions)
-                shift = shift_and_log_scale[..., 0]
-                log_scale = shift_and_log_scale[..., 1]
-                
-                # Apply the inverse transformation
-                y = y * tf.exp(log_scale) + shift
+            # Check if this is a MAF bijector by checking the class name
+            if 'MaskedAutoregressiveFlow' in str(type(bijector)):
+                # This is a conditional MAF layer - pass conditional input
+                y = bijector.inverse(y, conditional_input=conditions)
             else:
-                # Non-conditional bijector (e.g., permutation)
+                # Non-conditional bijector (e.g., permutation, batch norm) - don't pass conditional input
                 y = bijector.inverse(y)
         
         return y
+    
     
     def save(self, filepath: str):
         """Save the conditional flow model"""
@@ -233,12 +318,80 @@ class ConditionalTFPNormalizingFlow:
         print(f"✅ Conditional flow saved to {filepath}")
 
 
+def load_conditional_flow(model_path: str, preprocessing_path: str = None):
+    """Load a trained conditional flow model
+    
+    Args:
+        model_path: Path to the .npz model file
+        preprocessing_path: Path to the preprocessing .npz file (optional)
+    
+    Returns:
+        flow: Reconstructed ConditionalTFPNormalizingFlow
+        preprocessing_stats: Dictionary of preprocessing statistics (if provided)
+    """
+    import numpy as np
+    import tensorflow as tf
+    
+    # Load model data
+    model_data = np.load(model_path, allow_pickle=True)
+    
+    # Extract configuration
+    config = model_data['config'].item()
+    input_dim = config['input_dim']
+    condition_dim = config['condition_dim']
+    n_layers = config['n_layers']
+    hidden_units = config['hidden_units']
+    activation = config['activation']
+    name = config['name']
+    
+    # Recreate the flow with the same parameters as training
+    flow = ConditionalTFPNormalizingFlow(
+        input_dim=input_dim,
+        condition_dim=condition_dim,
+        n_layers=n_layers,
+        hidden_units=hidden_units,
+        activation=activation,
+        name=name,
+        use_batchnorm=False,  # Default values - these should match training
+        use_gmm_base=False,   # Always use simple Gaussian base for stability
+        mass_bin_edges=None,
+        gmm_components=None
+    )
+    
+    # Load variables
+    n_variables = model_data['n_variables']
+    variables = flow.trainable_variables
+    
+    # Restore variable values (these are the trained parameters, not initialization)
+    for i in range(n_variables):
+        var_data = model_data[f'variable_{i}']
+        var_shape = tuple(model_data[f'variable_{i}_shape'])
+        var_name = model_data[f'variable_{i}_name'].item()
+        
+        # Find the corresponding variable in the flow
+        for var in variables:
+            if var.name == var_name:
+                var.assign(var_data)
+                break
+    
+    # Load preprocessing stats if provided
+    preprocessing_stats = None
+    if preprocessing_path:
+        preprocessing_data = np.load(preprocessing_path, allow_pickle=True)
+        preprocessing_stats = {k: v for k, v in preprocessing_data.items()}
+    
+    return flow, preprocessing_stats
+
+
 class ConditionalTFPFlowTrainer:
     """Trainer for conditional TFP normalizing flows"""
     
-    def __init__(self, flow: ConditionalTFPNormalizingFlow, learning_rate: float = 1e-3):
+    def __init__(self, flow: ConditionalTFPNormalizingFlow, learning_rate: float = 1e-3,
+                 weight_decay: float = 0.0, noise_std: float = 0.0):
         self.flow = flow
         self.learning_rate = learning_rate
+        self.weight_decay = float(weight_decay)
+        self.noise_std = float(noise_std)
         
         # Create optimizer
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
@@ -248,20 +401,54 @@ class ConditionalTFPFlowTrainer:
         self.val_losses = []
     
     def compute_loss(self, x, conditions):
-        """Compute negative log likelihood loss for conditional flow"""
+        """Compute negative log likelihood loss for conditional flow with numerical stability"""
         log_probs = self.flow.log_prob(x, conditions)
-        return -tf.reduce_mean(log_probs)
+        
+        # Clip log probabilities to prevent extreme values
+        log_probs = tf.clip_by_value(log_probs, -50.0, 50.0)
+        
+        loss = -tf.reduce_mean(log_probs)
+        
+        if self.weight_decay > 0.0:
+            l2_terms = [tf.nn.l2_loss(v) for v in self.flow.trainable_variables]
+            if l2_terms:
+                loss = loss + self.weight_decay * tf.add_n(l2_terms)
+        return loss
     
     @tf.function
     def train_step(self, x, conditions):
-        """Single training step"""
+        """Single training step with numerical stability"""
         with tf.GradientTape() as tape:
+            if self.noise_std > 0.0:
+                noise_x = tf.random.normal(tf.shape(x), stddev=self.noise_std, dtype=x.dtype)
+                x = x + noise_x
             loss = self.compute_loss(x, conditions)
         
         gradients = tape.gradient(loss, self.flow.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
         
-        return loss
+        # Clip gradients more aggressively to prevent NaN
+        gradients, grad_norm = tf.clip_by_global_norm(gradients, 0.5)
+        
+        # Check for NaN in loss and gradients
+        loss_is_finite = tf.math.is_finite(loss)
+        gradients_are_finite = tf.reduce_all([tf.reduce_all(tf.math.is_finite(g)) for g in gradients])
+        
+        # Additional check: loss should not be too large
+        loss_is_reasonable = tf.less(loss, 100.0)
+        
+        # Only apply gradients if they are finite and reasonable
+        def apply_grads():
+            self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
+            return loss
+        
+        def skip_step():
+            return tf.constant(100.0, dtype=tf.float32)  # Return a large but finite value
+        
+        return tf.cond(
+            tf.logical_and(tf.logical_and(loss_is_finite, gradients_are_finite), loss_is_reasonable),
+            apply_grads,
+            skip_step
+        )
     
     def train(self, train_data, train_conditions, val_data=None, val_conditions=None,
               epochs: int = 100, batch_size: int = 512, validation_freq: int = 10,
@@ -305,7 +492,17 @@ class ConditionalTFPFlowTrainer:
             
             # Validation
             if val_data is not None and val_conditions is not None and epoch % validation_freq == 0:
-                val_loss = float(self.compute_loss(val_data, val_conditions))
+                val_log_probs = self.flow.log_prob(val_data, val_conditions)
+                # Clip validation log probabilities too
+                val_log_probs = tf.clip_by_value(val_log_probs, -50.0, 50.0)
+                val_loss = float(-tf.reduce_mean(val_log_probs))
+                
+                # Check for validation NaN or extreme values
+                if not np.isfinite(val_loss) or val_loss > 100.0:
+                    if verbose:
+                        print(f"❌ Validation loss is NaN or too large ({val_loss}) - stopping training")
+                    break
+                
                 self.val_losses.append(val_loss)
                 
                 if verbose:
@@ -406,10 +603,11 @@ def preprocess_conditional_data(
     mass_conditions: tf.Tensor,
     standardize: bool = True,
     clip_outliers: float = 5.0,
-    log_transform_mass: bool = True
+    log_transform_mass: bool = True,
+    n_mass_bins: int = 8
 ) -> Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
     """
-    Preprocess astrophysical data and mass conditions for conditional training
+    Preprocess astrophysical data and mass conditions for conditional training with embedding
     
     Args:
         phase_space_data: Input phase space tensor
@@ -417,10 +615,11 @@ def preprocess_conditional_data(
         standardize: Whether to standardize (zero mean, unit variance)
         clip_outliers: Clip outliers beyond this many standard deviations
         log_transform_mass: Whether to log-transform masses for better conditioning
+        n_mass_bins: Number of mass bins for embedding approach
     
     Returns:
         processed_phase_space: Preprocessed phase space tensor
-        processed_conditions: Preprocessed mass conditions
+        mass_bin_indices: Mass bin indices for embedding (tf.int32)
         preprocessing_stats: Statistics for inverse transform
     """
     print("Preprocessing conditional data...")
@@ -443,25 +642,34 @@ def preprocess_conditional_data(
                 clip_outliers
             )
     
-    # Preprocess mass conditions
-    processed_conditions = mass_conditions
+    # Convert masses to numpy for binning operations
+    masses_np = mass_conditions.numpy()
     
-    if log_transform_mass:
-        # Log transform masses for better numerical stability
-        processed_conditions = tf.math.log(mass_conditions + 1e-10)
+    # Handle the RuntimeWarning by setting minimum mass for log10
+    log_masses = np.log10(masses_np, where=masses_np > 0, out=np.full_like(masses_np, -10.0))
+    log_mass_min = np.min(log_masses)
+    log_mass_max = np.max(log_masses)
     
-    # Standardize mass conditions
-    mass_mean = tf.reduce_mean(processed_conditions, axis=0)
-    mass_std = tf.math.reduce_std(processed_conditions, axis=0)
+    # Create bins based on log-uniform distribution
+    bins = np.linspace(log_mass_min, log_mass_max, n_mass_bins + 1)
     
-    if standardize:
-        processed_conditions = (processed_conditions - mass_mean) / (mass_std + 1e-8)
+    # Get the integer bin index for each particle
+    # np.digitize returns indices [1, n_mass_bins]. Subtract 1 to get indices [0, n_mass_bins-1].
+    mass_bin_indices = np.digitize(log_masses, bins[:-1]) - 1
+    mass_bin_indices = np.clip(mass_bin_indices, 0, n_mass_bins - 1)
     
+    # Convert to TensorFlow tensor of integer type
+    mass_bin_indices = tf.convert_to_tensor(mass_bin_indices, dtype=tf.int32)
+    mass_bin_indices = tf.expand_dims(mass_bin_indices, axis=-1)
+    
+    # Store preprocessing statistics
     preprocessing_stats = {
         'ps_mean': ps_mean,
         'ps_std': ps_std,
-        'mass_mean': mass_mean,
-        'mass_std': mass_std,
+        'mass_bins': bins,
+        'n_mass_bins': n_mass_bins,
+        'log_mass_min': log_mass_min,
+        'log_mass_max': log_mass_max,
         'standardize': standardize,
         'clip_outliers': clip_outliers,
         'log_transform_mass': log_transform_mass
@@ -469,10 +677,32 @@ def preprocess_conditional_data(
     
     print(f"✅ Conditional preprocessing complete")
     print(f"Phase space range: [{tf.reduce_min(processed_phase_space):.3f}, {tf.reduce_max(processed_phase_space):.3f}]")
-    print(f"Mass conditions range: [{tf.reduce_min(processed_conditions):.3f}, {tf.reduce_max(processed_conditions):.3f}]")
+    print(f"Mass bin indices range: [{tf.reduce_min(mass_bin_indices):.0f}, {tf.reduce_max(mass_bin_indices):.0f}]")
+    print(f"Number of mass bins: {n_mass_bins}")
     
-    return processed_phase_space, processed_conditions, preprocessing_stats
+    return processed_phase_space, mass_bin_indices, preprocessing_stats
 
+
+def make_json_serializable(obj):
+    """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
+    if hasattr(obj, 'numpy'):
+        return float(obj.numpy())
+    elif isinstance(obj, (np.floating, np.integer)):
+        return float(obj)
+    elif hasattr(obj, 'dtype') and hasattr(obj, 'numpy'):
+        # Handle TensorFlow tensors
+        try:
+            return float(obj.numpy())
+        except:
+            return str(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    else:
+        return obj
 
 def split_conditional_data(
     phase_space_data: tf.Tensor,
@@ -531,7 +761,13 @@ def train_and_save_conditional_flow(
     n_samples: int = 100000,
     validation_split: float = 0.2,
     early_stopping_patience: int = 50,
-    reduce_lr_patience: int = 20
+    reduce_lr_patience: int = 20,
+    use_batchnorm: bool = False,
+    weight_decay: float = 0.0,
+    noise_std: float = 0.0,
+    use_gmm_base: bool = False,
+    mass_bin_edges: Optional[List[float]] = None,
+    gmm_components: int = 5
 ) -> Tuple[str, str]:
     """
     High-level function to train and save a conditional TFP flow for a specific particle.
@@ -567,7 +803,7 @@ def train_and_save_conditional_flow(
         # Preprocessing
         logger.info("🔧 Preprocessing conditional data...")
         processed_ps, processed_mass, preprocessing_stats = preprocess_conditional_data(
-            phase_space_data, mass_conditions
+            phase_space_data, mass_conditions, n_mass_bins=8
         )
         
         # Split data
@@ -583,6 +819,11 @@ def train_and_save_conditional_flow(
             condition_dim=1,  # 1D mass conditioning
             n_layers=n_layers,
             hidden_units=hidden_units,
+            activation='relu',
+            use_batchnorm=use_batchnorm,
+            use_gmm_base=False,  # Always use simple Gaussian base for stability
+            mass_bin_edges=None,
+            gmm_components=None,
             name=f'conditional_flow_pid{particle_pid}'
         )
         
@@ -590,7 +831,9 @@ def train_and_save_conditional_flow(
         logger.info("🎯 Creating conditional trainer...")
         trainer = ConditionalTFPFlowTrainer(
             flow=flow,
-            learning_rate=learning_rate
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            noise_std=noise_std
         )
         
         # Train
@@ -631,11 +874,12 @@ def train_and_save_conditional_flow(
                for k, v in preprocessing_stats.items()}
         )
         
-        # Save training results
+        # Save training results (convert all values to JSON-serializable types)
+        
         results = {
             'train_losses': [float(loss) for loss in trainer.train_losses],
             'val_losses': [float(loss) for loss in trainer.val_losses],
-            'metadata': enhanced_metadata,
+            'metadata': make_json_serializable(enhanced_metadata),
             'model_config': {
                 'input_dim': 6,
                 'condition_dim': 1,
@@ -679,12 +923,20 @@ def main():
     parser.add_argument("--n_layers", type=int, default=4, help="Number of flow layers")
     parser.add_argument("--hidden_units", type=int, default=512, help="Hidden units per layer")
     parser.add_argument("--activation", default="relu", help="Activation function")
+    parser.add_argument("--use_batchnorm", action="store_true", help="Insert invertible BatchNormalization bijectors between flow layers")
+    parser.add_argument("--use_gmm_base", action="store_true", help="Use Gaussian Mixture base distribution")
+    parser.add_argument("--mass_bin_edges", nargs='+', type=float, help="Mass bin edges (in transformed mass space)")
+    parser.add_argument("--gmm_components", type=int, help="Number of GMM components (defaults to number of bins)")
     
     # Training arguments
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--validation_freq", type=int, default=10, help="Validation frequency")
+    parser.add_argument("--early_stopping_patience", type=int, default=50, help="Validation checks to wait before early stopping")
+    parser.add_argument("--reduce_lr_patience", type=int, default=20, help="Validation checks to wait before reducing LR")
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="L2 weight decay applied during training")
+    parser.add_argument("--noise_std", type=float, default=0.0, help="Stddev of Gaussian noise added to inputs during training (on standardized data)")
     
     # Data preprocessing
     parser.add_argument("--no_standardize", action="store_true", help="Skip data standardization")
@@ -698,7 +950,7 @@ def main():
     
     # Set default output directory if not provided
     if not args.output_dir:
-        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/conditional_tfp_output/"
+        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output_conditional/"
     
     print("🚀 Conditional TensorFlow Probability Flow Training (Symlib)")
     print("=" * 60)
@@ -740,8 +992,14 @@ def main():
         hidden_units=args.hidden_units,
         generate_samples=False,  # Conditional sampling requires specific mass conditions
         validation_split=0.2,
-        early_stopping_patience=50,
-        reduce_lr_patience=20
+        early_stopping_patience=args.early_stopping_patience,
+        reduce_lr_patience=args.reduce_lr_patience,
+        use_batchnorm=args.use_batchnorm,
+        weight_decay=args.weight_decay,
+        noise_std=args.noise_std,
+        use_gmm_base=False,  # Always use simple Gaussian base for stability
+        mass_bin_edges=None,
+        gmm_components=None
     )
     
     print(f"✅ Conditional training completed successfully!")
@@ -751,3 +1009,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -107,3 +107,4 @@ echo "2. Test the migration: ./test_symlib_only.sh"
 echo "3. Submit jobs: sbatch submit_gpu_smart.sh"
 echo ""
 
+

@@ -112,19 +112,20 @@ def load_particle_data(halo_id: str, particle_pid: int, suite: str = 'eden') -> 
     if not np.any(mask):
         raise ValueError(f"❌ No data found for particle PID {particle_pid} in {halo_id}")
     
-    # Extract 6D data (3D position + 3D velocity)
+    # Extract 7D data (3D position + 3D velocity + mass)
     pos = halo_data['pos3'][mask]  # Shape: (N, 3)
     vel = halo_data['vel3'][mask]  # Shape: (N, 3)
+    mass = halo_data['mass'][mask]  # Shape: (N,)
     
-    # Combine into 6D array
-    data = np.column_stack([pos, vel])  # Shape: (N, 6)
+    # Combine into 7D array: [x, y, z, vx, vy, vz, mass]
+    data = np.column_stack([pos, vel, mass])  # Shape: (N, 7)
     
     print(f"✅ Extracted {data.shape[0]} particles for PID {particle_pid}")
     print(f"   Position range: [{pos.min():.2f}, {pos.max():.2f}] kpc")
     print(f"   Velocity range: [{vel.min():.2f}, {vel.max():.2f}] km/s")
     
     # Create metadata
-    particle_masses = halo_data['mass'][mask]
+    particle_masses = mass  # Use the mass data we already extracted
     total_stellar_mass = np.sum(particle_masses)
     
     metadata = {
@@ -137,7 +138,7 @@ def load_particle_data(halo_id: str, particle_pid: int, suite: str = 'eden') -> 
         'pos_range': [pos.min(), pos.max()],
         'vel_range': [vel.min(), vel.max()],
         'data_shape': data.shape,
-        'feature_names': ['x', 'y', 'z', 'vx', 'vy', 'vz'],
+        'feature_names': ['x', 'y', 'z', 'vx', 'vy', 'vz', 'mass'],
         'position_units': 'kpc',
         'velocity_units': 'km/s',
         'mass_units': 'solar_masses'

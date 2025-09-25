@@ -76,9 +76,9 @@ try:
     print(f'Data type: {data.dtype}')
     print(f'Total mass: {metadata[\"stellar_mass\"]:.2e} M☉')
     
-    # Basic validation
-    if data.shape[0] > 0 and data.shape[1] == 6:
-        print('✅ Data format valid')
+    # Basic validation - now expect 7 columns (pos + vel + mass)
+    if data.shape[0] > 0 and data.shape[1] == 7:
+        print('✅ Data format valid (7 columns: pos + vel + mass)')
         exit(0)
     else:
         print('❌ Invalid data format')

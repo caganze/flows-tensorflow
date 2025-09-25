@@ -47,3 +47,4 @@ echo ""
 echo "🎯 KROUPA IMF FIX COMPLETE!"
 echo "🚀 Ready to test training:"
 echo "   ./test_gpu_symlib_training.sh"
+

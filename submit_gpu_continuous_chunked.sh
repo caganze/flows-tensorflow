@@ -19,7 +19,7 @@ CHUNK_SIZE=200
 PARTITION="owners"
 TIME_LIMIT="12:00:00"
 MEMORY="128GB"
-GPUS=4
+GPUS=1
 CONCURRENT=3
 DRY_RUN=false
 START_CHUNK=1
@@ -36,7 +36,7 @@ show_usage() {
     echo "  --partition NAME    SLURM partition (default: owners)"
     echo "  --time HOURS        Time limit (default: 12:00:00)"
     echo "  --memory SIZE       Memory per task (default: 128GB)"
-    echo "  --gpus N            GPUs per task (default: 4)"
+    echo "  --gpus N            GPUs per task (fixed: 1, specified in job script)"
     echo "  --dry-run           Show what would be submitted"
     echo "  --help              Show this help"
     echo ""
@@ -137,7 +137,7 @@ echo "🔢 Total chunks: $TOTAL_CHUNKS"
 echo "🚀 Starting from chunk: $START_CHUNK"
 echo "⏰ Time per chunk: $TIME_LIMIT"
 echo "💾 Memory per task: $MEMORY"
-echo "🎮 GPUs per task: $GPUS"
+echo "🎮 GPUs per task: 1 (specified in job script)"
 echo "🎛️  Concurrent per chunk: $CONCURRENT"
 echo "📁 Output: /oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output_conditional/"
 echo ""
@@ -165,7 +165,7 @@ for (( chunk=START_CHUNK; chunk<=TOTAL_CHUNKS; chunk++ )); do
     echo "📦 Continuous Flow Chunk $chunk: particles $start_particle-$end_particle ($chunk_size_actual particles)"
     
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "  sbatch --array=$start_particle-$end_particle%$CONCURRENT --partition=$PARTITION --time=$TIME_LIMIT --mem=$MEMORY --gpus=$GPUS --qos=owners continuous_flow_gpu_job.sh"
+        echo "  sbatch --array=$start_particle-$end_particle%$CONCURRENT --partition=$PARTITION --time=$TIME_LIMIT --mem=$MEMORY continuous_flow_gpu_job.sh"
     else
         # Submit the job with custom particle list
         JOB_ID=$(sbatch \
@@ -173,8 +173,6 @@ for (( chunk=START_CHUNK; chunk<=TOTAL_CHUNKS; chunk++ )); do
             --partition=$PARTITION \
             --time=$TIME_LIMIT \
             --mem=$MEMORY \
-            --gpus=$GPUS \
-            --qos=owners \
             --job-name="continuous_chunk_$chunk" \
             --export=PARTICLE_LIST_FILE="$PARTICLE_LIST" \
             continuous_flow_gpu_job.sh | grep -o '[0-9]\+')

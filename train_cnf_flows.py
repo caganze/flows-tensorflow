@@ -81,6 +81,12 @@ def load_symlib_astrophysical_data(halo_id: str, particle_pid: int, suite: str =
     # Load particle data using symlib
     data, metadata = load_particle_data(halo_id, particle_pid, suite)
     
+    # Ensure we have at least 6D data (pos + vel), but handle 7D (pos + vel + mass)
+    if data.shape[1] >= 6:
+        data = data[:, :6]  # Take first 6 columns (pos + vel) for non-conditional training
+    else:
+        raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {data.shape}")
+    
     # Convert to TensorFlow tensor
     data_tensor = tf.constant(data, dtype=tf.float32)
     
@@ -125,9 +131,9 @@ def load_particle_specific_data(filepath: str, particle_pid: int) -> Tuple[tf.Te
         if len(data) == 0:
             raise ValueError(f"❌ No data found for particle PID {particle_pid}")
         
-        # Ensure we have 6D data (pos + vel)
+        # Ensure we have at least 6D data (pos + vel), but handle 7D (pos + vel + mass)
         if data.shape[1] >= 6:
-            data = data[:, :6]  # Take first 6 columns (pos + vel)
+            data = data[:, :6]  # Take first 6 columns (pos + vel) for non-conditional training
         else:
             raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {data.shape}")
         
@@ -196,6 +202,27 @@ def preprocess_data(
     
     return processed_data, preprocessing_stats
 
+
+def make_json_serializable(obj):
+    """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
+    if hasattr(obj, 'numpy'):
+        return float(obj.numpy())
+    elif isinstance(obj, (np.floating, np.integer)):
+        return float(obj)
+    elif hasattr(obj, 'dtype') and hasattr(obj, 'numpy'):
+        # Handle TensorFlow tensors
+        try:
+            return float(obj.numpy())
+        except:
+            return str(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    else:
+        return obj
 
 def split_data(
     data: tf.Tensor, 
@@ -392,7 +419,7 @@ def generate_cnf_samples_separately(
     try:
         # Prepare comprehensive metadata for samples
         samples_metadata = {
-            **metadata,  # Include all existing metadata
+            **make_json_serializable(metadata),  # Include all existing metadata (converted to JSON-serializable)
             'n_samples': n_samples,
             'model_name': model_name,
             'model_type': 'cnf',
@@ -694,7 +721,7 @@ def main():
     # Create CNF model
     print(f"\n🔄 Creating continuous normalizing flow...")
     flow = CNFNormalizingFlow(
-        input_dim=int(data.shape[1]),
+        input_dim=6,  # Always 6D for non-conditional flows (pos + vel)
         hidden_units=args.hidden_units,
         activation=args.activation,
         integration_time=args.integration_time,
@@ -786,3 +813,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

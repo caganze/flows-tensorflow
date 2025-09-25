@@ -18,10 +18,13 @@ echo "Job ID: ${SLURM_JOB_ID:-test}"
 
 # Environment setup
 module --force purge
-module load python/3.9.0
 
 source ~/.bashrc
 conda activate bosque
+
+# Disable TensorFlow GPU to avoid CUDA conflicts on CPU nodes
+export CUDA_VISIBLE_DEVICES=""
+export TF_CPP_MIN_LOG_LEVEL=2
 
 # Create directories
 mkdir -p logs success_logs failed_jobs
@@ -73,7 +76,7 @@ echo "📁 Suite: $SUITE, Halo ID: $HALO_ID"
 mkdir -p "$MODEL_DIR" "$SAMPLES_DIR"
 
 # Check if already completed
-if [[ -f "$SAMPLES_DIR/kde_samples_pid${SELECTED_PID}.h5" ]]; then
+if [[ -f "$SAMPLES_DIR/kde_samples_${HALO_ID}_pid${SELECTED_PID}.h5" ]]; then
     echo "✅ Already completed: Halo $HALO_ID PID $SELECTED_PID"
     echo "$(date) SUCCESS halo:$HALO_ID pid:$SELECTED_PID already_completed" >> success_logs/kde_success.log
     exit 0
@@ -81,33 +84,33 @@ fi
 
 # Determine optimal parameters based on particle size
 if [[ $OBJECT_COUNT -gt 100000 ]]; then
-    # Large particles (100k+): Need more neighbors for smoothing
-    N_NEIGHBORS=128
-    SAMPLE_FRACTION=0.8
-    MASS_RANGE_MIN=0.1
+    # Large particles (100k+): Conservative parameters to avoid NaN
+    N_NEIGHBORS=4
+    SAMPLE_FRACTION=1
+    MASS_RANGE_MIN=0.08
     MASS_RANGE_MAX=120
-    echo "🧠 KDE Large particle (>100k): neighbors=128, fraction=0.8"
+    echo "🧠 KDE Large particle (>100k): neighbors=64, fraction=0.3, conservative for stability"
 elif [[ $OBJECT_COUNT -gt 50000 ]]; then
     # Medium-large particles
-    N_NEIGHBORS=96
-    SAMPLE_FRACTION=1.0
-    MASS_RANGE_MIN=0.1
+    N_NEIGHBORS=4
+    SAMPLE_FRACTION=1
+    MASS_RANGE_MIN=0.08
     MASS_RANGE_MAX=120
-    echo "🧠 KDE Medium-large (50k-100k): neighbors=96, fraction=1.0"
+    echo "🧠 KDE Medium-large (50k-100k): neighbors=64, fraction=0.5"
 elif [[ $OBJECT_COUNT -lt 5000 ]]; then
     # Small particles: need oversampling
-    N_NEIGHBORS=64
-    SAMPLE_FRACTION=2.0
+    N_NEIGHBORS=4
+    SAMPLE_FRACTION=1
     MASS_RANGE_MIN=0.08
-    MASS_RANGE_MAX=50
-    echo "🧠 KDE Small particle (<5k): neighbors=64, fraction=2.0, focused mass range"
+    MASS_RANGE_MAX=120
+    echo "🧠 KDE Small particle (<5k): neighbors=32, fraction=2.0, focused mass range"
 else
     # Medium particles
-    N_NEIGHBORS=64
-    SAMPLE_FRACTION=1.2
-    MASS_RANGE_MIN=0.1
-    MASS_RANGE_MAX=100
-    echo "🧠 KDE Medium particle (5k-50k): neighbors=64, fraction=1.2"
+    N_NEIGHBORS=4
+    SAMPLE_FRACTION=1.0
+    MASS_RANGE_MIN=0.08
+    MASS_RANGE_MAX=120
+    echo "🧠 KDE Medium particle (5k-50k): neighbors=48, fraction=1.0"
 fi
 
 echo "🧠 Running KDE Sampling: Halo $HALO_ID PID $SELECTED_PID..."
@@ -138,10 +141,26 @@ with h5py.File('$SAMPLES_DIR/kde_samples_${HALO_ID}_pid${SELECTED_PID}.h5', 'r')
     pos = f['positions'][:]
     vel = f['velocities'][:]
     print(f'   Samples: {len(pos)}')
-    print(f'   Position range: [{pos.min():.2f}, {pos.max():.2f}]')
-    print(f'   Velocity range: [{vel.min():.2f}, {vel.max():.2f}]')
-    print(f'   Position std: {pos.std():.2f}')
-    print(f'   Velocity std: {vel.std():.2f}')
+    
+    # Check for finite values
+    pos_finite = np.isfinite(pos).all(axis=1)
+    vel_finite = np.isfinite(vel).all(axis=1)
+    finite_samples = np.sum(pos_finite & vel_finite)
+    
+    if finite_samples == len(pos):
+        print(f'   ✅ All samples are finite')
+        print(f'   Position range: [{np.min(pos):.2f}, {np.max(pos):.2f}]')
+        print(f'   Velocity range: [{np.min(vel):.2f}, {np.max(vel):.2f}]')
+        print(f'   Position std: {np.std(pos):.2f}')
+        print(f'   Velocity std: {np.std(vel):.2f}')
+    else:
+        print(f'   ⚠️  Warning: {len(pos)-finite_samples} samples contain NaN/inf')
+        if finite_samples > 0:
+            pos_clean = pos[pos_finite & vel_finite]
+            vel_clean = vel[pos_finite & vel_finite]
+            print(f'   Finite samples: {finite_samples}')
+            print(f'   Position range: [{np.min(pos_clean):.2f}, {np.max(pos_clean):.2f}]')
+            print(f'   Velocity range: [{np.min(vel_clean):.2f}, {np.max(vel_clean):.2f}]')
 "
     else
         echo "❌ FAILED: Missing KDE output files"

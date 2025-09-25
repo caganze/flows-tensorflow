@@ -41,6 +41,8 @@ class NeuralODE(tf.keras.Model):
         self.layers_list.append(tf.keras.layers.Dense(
             hidden_units[0], 
             activation=activation,
+            kernel_initializer='glorot_uniform',
+            bias_initializer='zeros',
             name=f'{name}_dense_0'
         ))
         
@@ -49,6 +51,8 @@ class NeuralODE(tf.keras.Model):
             self.layers_list.append(tf.keras.layers.Dense(
                 units, 
                 activation=activation,
+                kernel_initializer='glorot_uniform',
+                bias_initializer='zeros',
                 name=f'{name}_dense_{i}'
             ))
         
@@ -56,6 +60,8 @@ class NeuralODE(tf.keras.Model):
         self.layers_list.append(tf.keras.layers.Dense(
             input_dim, 
             activation=None,  # Linear output
+            kernel_initializer='glorot_uniform',
+            bias_initializer='zeros',
             name=f'{name}_output'
         ))
     
@@ -120,6 +126,8 @@ class ConditionalNeuralODE(tf.keras.Model):
         self.layers_list.append(tf.keras.layers.Dense(
             hidden_units[0], 
             activation=activation,
+            kernel_initializer='glorot_uniform',
+            bias_initializer='zeros',
             name=f'{name}_dense_0'
         ))
         
@@ -128,6 +136,8 @@ class ConditionalNeuralODE(tf.keras.Model):
             self.layers_list.append(tf.keras.layers.Dense(
                 units, 
                 activation=activation,
+                kernel_initializer='glorot_uniform',
+                bias_initializer='zeros',
                 name=f'{name}_dense_{i}'
             ))
         
@@ -135,6 +145,8 @@ class ConditionalNeuralODE(tf.keras.Model):
         self.layers_list.append(tf.keras.layers.Dense(
             input_dim, 
             activation=None,  # Linear output
+            kernel_initializer='glorot_uniform',
+            bias_initializer='zeros',
             name=f'{name}_output'
         ))
     
@@ -251,7 +263,7 @@ class CNFNormalizingFlow:
             x_part = state[..., :self.input_dim]
             
             # Compute dx/dt
-            with tf.GradientTape() as tape:
+            with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x_part)
                 dx_dt = self.neural_ode(x_part, t)
             
@@ -262,22 +274,25 @@ class CNFNormalizingFlow:
                 if grad_i is not None:
                     trace_jac += grad_i[..., i]
             
+            # Clean up persistent tape
+            del tape
+            
             # Negative trace for log det jacobian
             dlogdet_dt = -trace_jac
             
             return tf.concat([dx_dt, tf.expand_dims(dlogdet_dt, -1)], axis=-1)
         
         # Solve augmented ODE
-        solution = tfp.math.ode_solve(
+        solver = tfp.math.ode.BDF(rtol=1e-5, atol=1e-8)
+        solution = solver.solve(
             ode_fn=augmented_ode_func,
+            initial_time=self.time_points[0],
             initial_state=initial_state,
-            solution_times=self.time_points,
-            rtol=1e-5,
-            atol=1e-8
+            solution_times=self.time_points
         )
         
         # Extract final state
-        final_state = solution[-1]  # Last time step
+        final_state = solution.states[-1]  # Last time step
         z = final_state[..., :self.input_dim]
         log_det_jacobian = final_state[..., self.input_dim]
         
@@ -305,16 +320,16 @@ class CNFNormalizingFlow:
             return -self.neural_ode(x, self.integration_time - t)
         
         # Solve reverse ODE
-        solution = tfp.math.ode_solve(
+        solver = tfp.math.ode.BDF(rtol=1e-5, atol=1e-8)
+        solution = solver.solve(
             ode_fn=reverse_ode_func,
+            initial_time=reverse_time_points[0],
             initial_state=initial_state,
-            solution_times=reverse_time_points,
-            rtol=1e-5,
-            atol=1e-8
+            solution_times=reverse_time_points
         )
         
         # Extract final state (which is at t=0)
-        x = solution[-1]
+        x = solution.states[-1]
         
         return x
     
@@ -444,7 +459,7 @@ class ConditionalCNFNormalizingFlow:
             x_part = state[..., :self.input_dim]
             
             # Compute dx/dt with conditioning
-            with tf.GradientTape() as tape:
+            with tf.GradientTape(persistent=True) as tape:
                 tape.watch(x_part)
                 dx_dt = self.neural_ode(x_part, conditions, t)
             
@@ -455,22 +470,25 @@ class ConditionalCNFNormalizingFlow:
                 if grad_i is not None:
                     trace_jac += grad_i[..., i]
             
+            # Clean up persistent tape
+            del tape
+            
             # Negative trace for log det jacobian
             dlogdet_dt = -trace_jac
             
             return tf.concat([dx_dt, tf.expand_dims(dlogdet_dt, -1)], axis=-1)
         
         # Solve augmented ODE
-        solution = tfp.math.ode_solve(
+        solver = tfp.math.ode.BDF(rtol=1e-5, atol=1e-8)
+        solution = solver.solve(
             ode_fn=augmented_ode_func,
+            initial_time=self.time_points[0],
             initial_state=initial_state,
-            solution_times=self.time_points,
-            rtol=1e-5,
-            atol=1e-8
+            solution_times=self.time_points
         )
         
         # Extract final state
-        final_state = solution[-1]
+        final_state = solution.states[-1]
         z = final_state[..., :self.input_dim]
         log_det_jacobian = final_state[..., self.input_dim]
         
@@ -494,16 +512,16 @@ class ConditionalCNFNormalizingFlow:
             return -self.neural_ode(x, conditions, self.integration_time - t)
         
         # Solve reverse ODE
-        solution = tfp.math.ode_solve(
+        solver = tfp.math.ode.BDF(rtol=1e-5, atol=1e-8)
+        solution = solver.solve(
             ode_fn=reverse_ode_func,
+            initial_time=reverse_time_points[0],
             initial_state=z,
-            solution_times=reverse_time_points,
-            rtol=1e-5,
-            atol=1e-8
+            solution_times=reverse_time_points
         )
         
         # Extract final state (at t=0)
-        x = solution[-1]
+        x = solution.states[-1]
         
         return x
     
@@ -571,26 +589,53 @@ class CNFFlowTrainer:
         self.val_losses = []
     
     def compute_loss(self, x):
-        """Compute negative log likelihood loss"""
+        """Compute negative log likelihood loss with numerical stability"""
         log_probs = self.flow.log_prob(x)
+        
+        # Clip log probabilities to prevent extreme values
+        log_probs = tf.clip_by_value(log_probs, -50.0, 50.0)
+        
         return -tf.reduce_mean(log_probs)
     
     @tf.function
     def train_step(self, x):
-        """Single training step"""
+        """Single training step with numerical stability"""
         with tf.GradientTape() as tape:
             loss = self.compute_loss(x)
         
         gradients = tape.gradient(loss, self.flow.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
         
-        return loss
+        # Clip gradients more aggressively to prevent NaN
+        gradients, grad_norm = tf.clip_by_global_norm(gradients, 0.5)
+        
+        # Check for NaN in loss and gradients
+        loss_is_finite = tf.math.is_finite(loss)
+        gradients_are_finite = tf.reduce_all([tf.reduce_all(tf.math.is_finite(g)) for g in gradients])
+        
+        # Additional check: loss should not be too large
+        loss_is_reasonable = tf.less(loss, 100.0)
+        
+        # Only apply gradients if they are finite and reasonable
+        def apply_grads():
+            self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
+            return loss
+        
+        def skip_step():
+            return tf.constant(100.0, dtype=tf.float32)  # Return a large but finite value
+        
+        return tf.cond(
+            tf.logical_and(tf.logical_and(loss_is_finite, gradients_are_finite), loss_is_reasonable),
+            apply_grads,
+            skip_step
+        )
     
     def train(self, train_data, val_data=None, epochs: int = 100, 
               batch_size: int = 512, validation_freq: int = 10, verbose: bool = True):
         """Train the CNF"""
         
         n_batches = len(train_data) // batch_size
+        best_val_loss = float('inf')
+        best_weights = None  # Store best model weights
         
         for epoch in range(epochs):
             epoch_losses = []
@@ -613,13 +658,37 @@ class CNFFlowTrainer:
             
             # Validation
             if val_data is not None and epoch % validation_freq == 0:
-                val_loss = float(self.compute_loss(val_data))
+                val_log_probs = self.flow.log_prob(val_data)
+                # Clip validation log probabilities too
+                val_log_probs = tf.clip_by_value(val_log_probs, -50.0, 50.0)
+                val_loss = float(-tf.reduce_mean(val_log_probs))
+                
+                # Check for validation NaN or extreme values
+                if not np.isfinite(val_loss) or val_loss > 100.0:
+                    if verbose:
+                        print(f"❌ Validation loss is NaN or too large ({val_loss}) - stopping training")
+                    break
+                
                 self.val_losses.append(val_loss)
+                
+                # Save best weights
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_weights = [var.numpy().copy() for var in self.flow.trainable_variables]
+                    if verbose:
+                        print(f"✅ New best validation loss: {val_loss:.6f} (epoch {epoch})")
                 
                 if verbose:
                     print(f"Epoch {epoch:4d}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f}")
             elif verbose and epoch % validation_freq == 0:
                 print(f"Epoch {epoch:4d}: Train Loss = {avg_loss:.6f}")
+        
+        # Restore best weights if we have validation data
+        if best_weights is not None and val_data is not None:
+            for var, best_weight in zip(self.flow.trainable_variables, best_weights):
+                var.assign(best_weight)
+            if verbose:
+                print(f"🔄 Restored best CNF model weights (val_loss: {best_val_loss:.6f})")
         
         if verbose:
             print(f"✅ CNF training completed after {epochs} epochs")
@@ -640,20 +709,45 @@ class ConditionalCNFFlowTrainer:
         self.val_losses = []
     
     def compute_loss(self, x, conditions):
-        """Compute negative log likelihood loss for conditional flow"""
+        """Compute negative log likelihood loss for conditional flow with numerical stability"""
         log_probs = self.flow.log_prob(x, conditions)
+        
+        # Clip log probabilities to prevent extreme values
+        log_probs = tf.clip_by_value(log_probs, -50.0, 50.0)
+        
         return -tf.reduce_mean(log_probs)
     
     @tf.function
     def train_step(self, x, conditions):
-        """Single training step"""
+        """Single training step with numerical stability"""
         with tf.GradientTape() as tape:
             loss = self.compute_loss(x, conditions)
         
         gradients = tape.gradient(loss, self.flow.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
         
-        return loss
+        # Clip gradients more aggressively to prevent NaN
+        gradients, grad_norm = tf.clip_by_global_norm(gradients, 0.5)
+        
+        # Check for NaN in loss and gradients
+        loss_is_finite = tf.math.is_finite(loss)
+        gradients_are_finite = tf.reduce_all([tf.reduce_all(tf.math.is_finite(g)) for g in gradients])
+        
+        # Additional check: loss should not be too large
+        loss_is_reasonable = tf.less(loss, 100.0)
+        
+        # Only apply gradients if they are finite and reasonable
+        def apply_grads():
+            self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
+            return loss
+        
+        def skip_step():
+            return tf.constant(100.0, dtype=tf.float32)  # Return a large but finite value
+        
+        return tf.cond(
+            tf.logical_and(tf.logical_and(loss_is_finite, gradients_are_finite), loss_is_reasonable),
+            apply_grads,
+            skip_step
+        )
     
     def train(self, train_data, train_conditions, val_data=None, val_conditions=None,
               epochs: int = 100, batch_size: int = 512, validation_freq: int = 10,
@@ -686,7 +780,17 @@ class ConditionalCNFFlowTrainer:
             
             # Validation
             if val_data is not None and val_conditions is not None and epoch % validation_freq == 0:
-                val_loss = float(self.compute_loss(val_data, val_conditions))
+                val_log_probs = self.flow.log_prob(val_data, val_conditions)
+                # Clip validation log probabilities too
+                val_log_probs = tf.clip_by_value(val_log_probs, -50.0, 50.0)
+                val_loss = float(-tf.reduce_mean(val_log_probs))
+                
+                # Check for validation NaN or extreme values
+                if not np.isfinite(val_loss) or val_loss > 100.0:
+                    if verbose:
+                        print(f"❌ Validation loss is NaN or too large ({val_loss}) - stopping training")
+                    break
+                
                 self.val_losses.append(val_loss)
                 
                 if verbose:
@@ -753,3 +857,4 @@ def load_cnf_flow(model_path: str):
     except Exception as e:
         print(f"❌ Error loading CNF model: {e}")
         raise
+

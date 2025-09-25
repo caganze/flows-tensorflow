@@ -199,7 +199,7 @@ try:
     print(f'✅ Total stellar mass: {metadata[\"stellar_mass\"]:.2e} M☉')
     
     # Validate data ranges
-    if data.shape[1] == 6:  # Should be 6D (position + velocity)
+    if data.shape[1] == 7:  # Should be 7D (position + velocity + mass)
         pos_range = metadata['pos_range']
         vel_range = metadata['vel_range']
         print(f'✅ Position range: [{pos_range[0]:.2f}, {pos_range[1]:.2f}] kpc')
@@ -461,4 +461,5 @@ else
     echo "Finished: $(date)"
     exit 1
 fi
+
 

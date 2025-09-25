@@ -149,10 +149,10 @@ try:
     data, metadata = load_particle_data('Halo939', 1, 'eden')
     elapsed = time.time() - start
     print(f'Loaded {data.shape[0]} particles in {elapsed:.1f}s')
-    if data.shape[0] > 0 and data.shape[1] == 6:
-        print('✅ Data shape and format correct')
+    if data.shape[0] > 0 and data.shape[1] == 7:
+        print('✅ Data shape and format correct (7 columns: pos + vel + mass)')
     else:
-        print('❌ Data shape wrong')
+        print('❌ Data shape wrong - expected 7 columns, got', data.shape[1])
         exit(1)
 except Exception as e:
     print(f'❌ Symlib loading failed: {e}')

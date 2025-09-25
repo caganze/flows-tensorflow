@@ -69,3 +69,4 @@ print('🎉 TensorFlow reinstallation successful!')
 
 echo "✅ TensorFlow reinstallation complete!"
 echo "🚀 Ready to test symlib training"
+

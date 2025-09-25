@@ -1,4 +1,4 @@
-#!/bin/bashM@m@bile_6575
+#!/bin/bash
 #SBATCH --job-name="brute_force_particle_list"
 #SBATCH --partition=owners
 #SBATCH --time=12:00:00
@@ -81,15 +81,43 @@ if [[ -f "$MODEL_DIR/model_pid${SELECTED_PID}.npz" ]] && [[ -f "$SAMPLES_DIR/mod
     exit 0
 fi
 
-# Determine optimal parameters based on particle size
-if [[ $OBJECT_COUNT -gt 100000 ]]; then
-    # Large particles (100k+): Need capacity with low learning rate
+
+# Determine optimal parameters based on particle size (with stability options)
+VALID_FREQ=5
+EARLY_STOP=25
+REDUCE_PAT=12
+CLIP_OUT=3.0
+WEIGHT_DECAY=2e-5
+NOISE_STD=0.005
+USE_BN_FLAG="--use_batchnorm"
+
+if [[ "$SELECTED_PID" == "5" ]]; then
+    # Special stabilization for PID 5
+    EPOCHS=200
+    BATCH_SIZE=1024
+    N_LAYERS=8
+    HIDDEN_UNITS=768
+    LEARNING_RATE=1e-4
+    VALID_FREQ=2
+    EARLY_STOP=30
+    REDUCE_PAT=15
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    USE_BN_FLAG=""  # disable batchnorm for stability
+    echo "🧠 PID 5 stabilization: epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE, BN=off"
+elif [[ $OBJECT_COUNT -gt 100000 ]]; then
+    # Large particles (100k+): lower LR, enable regularization, BN off
     EPOCHS=60
     BATCH_SIZE=512
     N_LAYERS=4
     HIDDEN_UNITS=512
     LEARNING_RATE=2e-4
-    echo "🧠 Training Large particle (>100k): epochs=60, layers=4, units=512, lr=2e-4"
+    EARLY_STOP=30
+    REDUCE_PAT=15
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    USE_BN_FLAG=""  # BN off for very large
+    echo "🧠 Large (>100k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE, BN=off"
 elif [[ $OBJECT_COUNT -gt 50000 ]]; then
     # Medium-large particles
     EPOCHS=45
@@ -97,7 +125,7 @@ elif [[ $OBJECT_COUNT -gt 50000 ]]; then
     N_LAYERS=3
     HIDDEN_UNITS=384
     LEARNING_RATE=3e-4
-    echo "🧠 Training Medium-large (50k-100k): epochs=45, layers=3, units=384, lr=3e-4"
+    echo "🧠 Medium-large (50k-100k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 elif [[ $OBJECT_COUNT -lt 5000 ]]; then
     # Small particles
     EPOCHS=35
@@ -105,7 +133,9 @@ elif [[ $OBJECT_COUNT -lt 5000 ]]; then
     N_LAYERS=3
     HIDDEN_UNITS=256
     LEARNING_RATE=5e-4
-    echo "🧠 Training Small particle (<5k): epochs=35, layers=3, units=256, lr=5e-4"
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    echo "🧠 Small (<5k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 else
     # Medium particles
     EPOCHS=40
@@ -113,7 +143,7 @@ else
     N_LAYERS=3
     HIDDEN_UNITS=320
     LEARNING_RATE=4e-4
-    echo "🧠 Training Medium particle (5k-50k): epochs=40, layers=3, units=320, lr=4e-4"
+    echo "🧠 Medium (5k-50k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 fi
 
 echo "🧠 Training Halo $HALO_ID PID $SELECTED_PID..."
@@ -127,6 +157,13 @@ echo "🧠 Training Halo $HALO_ID PID $SELECTED_PID..."
         --learning_rate $LEARNING_RATE \
         --n_layers $N_LAYERS \
         --hidden_units $HIDDEN_UNITS \
+        --validation_freq $VALID_FREQ \
+        --early_stopping_patience $EARLY_STOP \
+        --reduce_lr_patience $REDUCE_PAT \
+        --clip_outliers $CLIP_OUT \
+        --weight_decay $WEIGHT_DECAY \
+        --noise_std $NOISE_STD \
+        $USE_BN_FLAG \
         --generate-samples \
 
 TRAIN_EXIT=$?

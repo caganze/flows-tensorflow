@@ -82,6 +82,12 @@ def load_symlib_astrophysical_data(halo_id: str, particle_pid: int, suite: str =
     # Load particle data using symlib
     data, metadata = load_particle_data(halo_id, particle_pid, suite)
     
+    # Ensure we have at least 6D data (pos + vel), but handle 7D (pos + vel + mass)
+    if data.shape[1] >= 6:
+        data = data[:, :6]  # Take first 6 columns (pos + vel) for non-conditional training
+    else:
+        raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {data.shape}")
+    
     # Convert to TensorFlow tensor
     data_tensor = tf.constant(data, dtype=tf.float32)
     
@@ -125,9 +131,9 @@ def load_particle_specific_data(filepath: str, particle_pid: int) -> Tuple[tf.Te
         if len(data) == 0:
             raise ValueError(f"❌ No data found for particle PID {particle_pid}")
         
-        # Ensure we have 6D data (pos + vel)
+        # Ensure we have at least 6D data (pos + vel), but handle 7D (pos + vel + mass)
         if data.shape[1] >= 6:
-            data = data[:, :6]  # Take first 6 columns (pos + vel)
+            data = data[:, :6]  # Take first 6 columns (pos + vel) for non-conditional training
         else:
             raise ValueError(f"Insufficient data dimensions for PID {particle_pid}: {data.shape}")
         
@@ -232,6 +238,27 @@ def split_data(
     return train_data, val_data, test_data
 
 # Plotting function removed - not needed for production training
+
+def make_json_serializable(obj):
+    """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
+    if hasattr(obj, 'numpy'):
+        return float(obj.numpy())
+    elif isinstance(obj, (np.floating, np.integer)):
+        return float(obj)
+    elif hasattr(obj, 'dtype') and hasattr(obj, 'numpy'):
+        # Handle TensorFlow tensors
+        try:
+            return float(obj.numpy())
+        except:
+            return str(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    else:
+        return obj
 
 def save_model_only(
     flow: TFPNormalizingFlow,
@@ -449,7 +476,7 @@ def generate_samples_separately(
     try:
         # Prepare comprehensive metadata for samples
         samples_metadata = {
-            **metadata,  # Include all existing metadata
+            **make_json_serializable(metadata),  # Include all existing metadata (converted to JSON-serializable)
             'n_samples': n_samples,
             'model_name': model_name,
             'created_timestamp': time.time(),
@@ -514,20 +541,6 @@ def save_model_and_results(
     )
     
     # Save training results - convert all values to JSON-serializable types
-    def make_json_serializable(obj):
-        """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
-        if hasattr(obj, 'numpy'):
-            return float(obj.numpy())
-        elif isinstance(obj, (np.floating, np.integer)):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, list):
-            return [make_json_serializable(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {k: make_json_serializable(v) for k, v in obj.items()}
-        else:
-            return obj
     
     results = {
         'train_losses': [float(loss) for loss in trainer.train_losses],
@@ -582,7 +595,7 @@ def save_model_and_results(
         try:
             # Prepare comprehensive metadata for samples
             samples_metadata = {
-                **metadata,  # Include all existing metadata
+                **make_json_serializable(metadata),  # Include all existing metadata (converted to JSON-serializable)
                 'n_samples': n_samples,
                 'model_name': model_name,
                 'training_epochs': len(trainer.train_losses),
@@ -622,10 +635,10 @@ def save_model_and_results(
                 'io_strategy': 'HDF5 + NPZ' if n_samples > 1_000_000 else 'NPZ only',
                 'kroupa_masses_included': masses is not None,
                 'sample_statistics': {
-                    'mean': tf.reduce_mean(samples, axis=0).numpy().tolist(),
-                    'std': tf.math.reduce_std(samples, axis=0).numpy().tolist(),
-                    'min': tf.reduce_min(samples, axis=0).numpy().tolist(),
-                    'max': tf.reduce_max(samples, axis=0).numpy().tolist()
+                    'mean': [float(x) for x in tf.reduce_mean(samples, axis=0).numpy()],
+                    'std': [float(x) for x in tf.math.reduce_std(samples, axis=0).numpy()],
+                    'min': [float(x) for x in tf.reduce_min(samples, axis=0).numpy()],
+                    'max': [float(x) for x in tf.reduce_max(samples, axis=0).numpy()]
                 }
             }
             
@@ -660,6 +673,10 @@ def train_and_save_flow(
     learning_rate: float = 1e-3,
     n_layers: int = 4,
     hidden_units: int = 64,
+    activation: str = "relu",
+    use_batchnorm: bool = False,
+    weight_decay: float = 0.0,
+    noise_std: float = 0.0,
     generate_samples: bool = True,
     n_samples: int = 100000,
     # use_kroupa_imf removed - now MANDATORY and always True
@@ -717,6 +734,8 @@ def train_and_save_flow(
             input_dim=6,
             n_layers=n_layers,
             hidden_units=hidden_units,
+            activation=activation,
+            use_batchnorm=use_batchnorm,
             name=f'flow_pid{particle_pid}'
         )
         
@@ -724,29 +743,50 @@ def train_and_save_flow(
         logger.info("🎯 Creating trainer...")
         trainer = TFPFlowTrainer(
             flow=flow,
-            learning_rate=learning_rate
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            noise_std=noise_std
         )
         
         # Train
         logger.info(f"🏋️ Training for {epochs} epochs...")
-        trainer.train(
+        train_losses, val_losses = trainer.train(
             train_data=train_data,
             val_data=val_data,
             epochs=epochs,
-            batch_size=batch_size
+            batch_size=batch_size,
+            validation_freq=5,
+            early_stopping_patience=early_stopping_patience,
+            reduce_lr_patience=reduce_lr_patience
         )
+        
+        # CRITICAL: Ensure best weights are restored before saving
+        logger.info("🔄 Verifying best model weights are restored...")
+        if val_losses and len(val_losses) > 0:
+            best_val_loss = min(val_losses)
+            final_val_loss = val_losses[-1]
+            logger.info(f"   Best validation loss: {best_val_loss:.6f}")
+            logger.info(f"   Final validation loss: {final_val_loss:.6f}")
+            
+            # If final loss is much worse than best, the restoration might have failed
+            if final_val_loss > best_val_loss * 1.1:  # 10% tolerance
+                logger.warning(f"⚠️ Final loss ({final_val_loss:.6f}) is significantly worse than best ({best_val_loss:.6f})")
+                logger.warning("   This suggests the best weights restoration may have failed")
         
         # Enhanced metadata
         logger.info("📋 Preparing enhanced metadata...")
         enhanced_metadata = {
             **metadata,
             'particle_pid': particle_pid,
-            'training_epochs': epochs,
+            'training_epochs': len(train_losses),
             'batch_size': batch_size,
             'learning_rate': learning_rate,
             'validation_split': validation_split,
             'use_kroupa_imf': True,  # MANDATORY - always True
-            'n_samples_requested': n_samples if generate_samples else 0
+            'n_samples_requested': n_samples if generate_samples else 0,
+            'final_train_loss': float(train_losses[-1]) if train_losses else 0.0,
+            'final_val_loss': float(val_losses[-1]) if val_losses else 0.0,
+            'best_val_loss': float(min(val_losses)) if val_losses else 0.0
         }
         
         # Save model first (critical - don't lose trained model)
@@ -760,16 +800,36 @@ def train_and_save_flow(
             model_name=f"model_pid{particle_pid}"
         )
         
+        # CRITICAL: Test the saved model to ensure it works
+        logger.info("🧪 Testing saved model with small sample...")
+        try:
+            test_samples = flow.sample(10)
+            if tf.reduce_any(tf.math.is_nan(test_samples)):
+                logger.error("❌ CRITICAL: Saved model produces NaN samples!")
+                logger.error("   The model weights may be corrupted or not properly saved")
+                raise ValueError("Saved model produces NaN samples - training failed")
+            else:
+                logger.info(f"✅ Saved model test successful: {test_samples.shape}")
+                logger.info(f"   Sample range: [{test_samples.numpy().min():.3f}, {test_samples.numpy().max():.3f}]")
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Saved model test failed: {e}")
+            logger.error("   The model cannot generate valid samples")
+            raise ValueError(f"Saved model test failed: {e}")
+        
         # Generate samples separately (can be done later if memory issues)
         samples_path = None
         if generate_samples:
             logger.info("🎲 Generating samples...")
             try:
+                # Use proper samples directory structure
+                output_paths = get_output_paths(halo_id, particle_pid, suite)
+                samples_output_dir = output_paths['samples_dir']
+                
                 samples_path = generate_samples_separately(
                     flow=flow,
                     preprocessing_stats=preprocessing_stats,
                     metadata=enhanced_metadata,
-                    output_dir=output_dir,
+                    output_dir=samples_output_dir,
                     model_name=f"model_pid{particle_pid}",
                     n_samples=n_samples
                 )
@@ -804,12 +864,19 @@ def main():
     parser.add_argument("--n_layers", type=int, default=4, help="Number of flow layers")
     parser.add_argument("--hidden_units", type=int, default=512, help="Hidden units per layer")
     parser.add_argument("--activation", default="relu", help="Activation function")
+    parser.add_argument("--use_batchnorm", action="store_true", help="Insert invertible BatchNormalization bijectors between flow layers")
+    parser.add_argument("--use_gmm_base", action="store_true", help="Use Gaussian Mixture base distribution")
+    parser.add_argument("--gmm_components", type=int, default=5, help="Number of GMM components for base distribution")
     
     # Training arguments
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--validation_freq", type=int, default=10, help="Validation frequency")
+    parser.add_argument("--early_stopping_patience", type=int, default=50, help="Validation checks to wait before early stopping")
+    parser.add_argument("--reduce_lr_patience", type=int, default=20, help="Validation checks to wait before reducing LR")
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="L2 weight decay applied during training")
+    parser.add_argument("--noise_std", type=float, default=0.0, help="Stddev of Gaussian noise added to inputs during training (on standardized data)")
     
     # Data preprocessing
     parser.add_argument("--no_standardize", action="store_true", help="Skip data standardization")
@@ -831,7 +898,9 @@ def main():
     
     # Set default output directory if not provided
     if not args.output_dir:
-        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output/"
+        # Use proper hierarchical structure
+        output_paths = get_output_paths(args.halo_id, args.particle_pid, args.suite)
+        args.output_dir = output_paths['trained_flows_dir']
     
     # MANDATORY: Enforce Kroupa IMF usage
     if not args.use_kroupa_imf:
@@ -876,12 +945,16 @@ def main():
             learning_rate=args.learning_rate,
             n_layers=args.n_layers,
             hidden_units=args.hidden_units,
+            activation=args.activation,
+            use_batchnorm=args.use_batchnorm,
+            weight_decay=args.weight_decay,
+            noise_std=args.noise_std,
             generate_samples=args.generate_samples,
             n_samples=args.n_samples,
             # use_kroupa_imf removed - now MANDATORY and always True
             validation_split=0.2,
-            early_stopping_patience=50,
-            reduce_lr_patience=20
+            early_stopping_patience=args.early_stopping_patience,
+            reduce_lr_patience=args.reduce_lr_patience
         )
         print(f"✅ Training completed successfully!")
         print(f"Model saved to: {model_path}")
@@ -905,15 +978,20 @@ def main():
     # Create flow model
     print(f"\n🔄 Creating normalizing flow...")
     flow = TFPNormalizingFlow(
-        input_dim=int(data.shape[1]),
+        input_dim=6,  # Always 6D for non-conditional flows (pos + vel)
         n_layers=args.n_layers,
         hidden_units=args.hidden_units,
         activation=args.activation,
+        use_batchnorm=args.use_batchnorm,
+        use_gmm_base=args.use_gmm_base,
+        gmm_components=args.gmm_components,
         name='main_flow'
     )
     
     # Create trainer
-    trainer = TFPFlowTrainer(flow, learning_rate=args.learning_rate)
+    trainer = TFPFlowTrainer(flow, learning_rate=args.learning_rate,
+                             weight_decay=args.weight_decay,
+                             noise_std=args.noise_std)
     
     # Train the model
     print(f"\n🎯 Training the flow...")
@@ -925,6 +1003,8 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         validation_freq=args.validation_freq,
+        early_stopping_patience=args.early_stopping_patience,
+        reduce_lr_patience=args.reduce_lr_patience,
         verbose=True
     )
     

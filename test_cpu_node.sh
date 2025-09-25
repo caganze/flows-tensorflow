@@ -13,7 +13,7 @@ echo
 echo "🔧 TEST 1: Environment Setup"
 echo "-----------------------------"
 module purge
-module load math devel python/3.9.0
+# module load math devel python/3.9.0  # Commented out - using conda instead
 
 # CPU-specific TensorFlow optimizations
 export TF_CPP_MIN_LOG_LEVEL=1

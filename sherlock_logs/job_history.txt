@@ -1,1 +1,0 @@
-sacct: error: Invalid user id: christianaganze

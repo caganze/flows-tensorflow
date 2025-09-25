@@ -148,3 +148,4 @@ echo "4. On Sherlock: ./test_symlib_only.sh"
 echo "5. Submit jobs: sbatch submit_gpu_smart.sh"
 echo ""
 
+

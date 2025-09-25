@@ -230,8 +230,8 @@ def load_halo_data(halo_id, parent_id, suite='eden'):
     # Combine position and velocity into 6D phase space
     nimbus_6d = np.hstack([nimbus['pos3'][id_select], nimbus['vel3'][id_select]])
     
-    # Scale masses (divide by 100 as in original code)
-    nimbus_masses = nimbus['mass'][id_select] / 100
+    # Use actual masses (removed problematic /100 scaling)
+    nimbus_masses = nimbus['mass'][id_select]
     
     print(f"Selected {len(nimbus_masses)} particles")
     print(f"Mass range: {nimbus_masses.min():.2e} - {nimbus_masses.max():.2e}")
@@ -287,6 +287,28 @@ def generate_kde_samples(phase_space, masses, n_neighbors=64, sample_fraction=1.
     kroupa_samples = kroupa_sampler.sample(frac=sample_fraction)
     
     print(f"Generated {len(kroupa_samples)} samples")
+    
+    # Validate samples for NaN/inf values
+    if np.any(~np.isfinite(kroupa_samples)):
+        print(f"⚠️  Warning: Found NaN/inf values in samples")
+        print(f"   Before cleaning: {len(kroupa_samples)} samples")
+        
+        # Remove NaN/inf rows
+        finite_mask = np.all(np.isfinite(kroupa_samples), axis=1)
+        kroupa_samples = kroupa_samples[finite_mask]
+        
+        print(f"   After cleaning: {len(kroupa_samples)} samples")
+        
+        if len(kroupa_samples) == 0:
+            raise ValueError("All samples contained NaN/inf values - KDE failed")
+    
+    # Additional validation
+    pos_range = [kroupa_samples[:, :3].min(), kroupa_samples[:, :3].max()]
+    vel_range = [kroupa_samples[:, 3:].min(), kroupa_samples[:, 3:].max()]
+    
+    print(f"Sample validation:")
+    print(f"   Position range: [{pos_range[0]:.2f}, {pos_range[1]:.2f}]")
+    print(f"   Velocity range: [{vel_range[0]:.2f}, {vel_range[1]:.2f}]")
     
     return kroupa_samples
 

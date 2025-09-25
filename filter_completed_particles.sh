@@ -98,8 +98,8 @@ is_particle_completed() {
     
     # Construct expected output paths - use symlib structure
     local output_base_dir="/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/tfp_output"
-    local model_dir="$output_base_dir/trained_flows/${suite}/halo${halo_id}"
-    local samples_dir="$output_base_dir/samples/${suite}/halo${halo_id}"
+    local model_dir="$output_base_dir/trained_flows/${suite}/halo${halo_id#Halo}"
+    local samples_dir="$output_base_dir/samples/${suite}/halo${halo_id#Halo}"
     
     # Check if completion files exist
     local model_file="$model_dir/model_pid${pid}.npz"

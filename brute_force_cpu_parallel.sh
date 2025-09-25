@@ -23,7 +23,7 @@ echo "CPUs: ${SLURM_CPUS_PER_TASK:-64}"
 module purge
 module load math
 module load devel
-module load python/3.9.0
+# module load python/3.9.0  # Commented out - using conda environment instead
 
 # CPU-specific TensorFlow optimizations
 export TF_CPP_MIN_LOG_LEVEL=1
@@ -106,39 +106,68 @@ if [[ -f "$MODEL_DIR/model_pid${SELECTED_PID}.npz" ]] && [[ -f "$SAMPLES_DIR/mod
     exit 0
 fi
 
-# SOPHISTICATED anti-overfitting parameters based on particle size
-if [[ $OBJECT_COUNT -gt 100000 ]]; then
-    # Large particles (100k+): Need capacity but with strong regularization
-    EPOCHS=50
+# SOPHISTICATED anti-overfitting parameters based on particle size (with stability options)
+VALID_FREQ=5
+EARLY_STOP=25
+REDUCE_PAT=12
+CLIP_OUT=3.0
+WEIGHT_DECAY=2e-5
+NOISE_STD=0.005
+USE_BN_FLAG="--use_batchnorm"
+
+if [[ "$SELECTED_PID" == "5" ]]; then
+    # Special stabilization for PID 5
+    EPOCHS=200
+    BATCH_SIZE=1024
+    N_LAYERS=8
+    HIDDEN_UNITS=768
+    LEARNING_RATE=1e-4
+    VALID_FREQ=2
+    EARLY_STOP=30
+    REDUCE_PAT=15
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    USE_BN_FLAG=""  # BN off for stability
+    echo "🧠 PID 5 stabilization: epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE, BN=off"
+elif [[ $OBJECT_COUNT -gt 100000 ]]; then
+    # Large particles (100k+)
+    EPOCHS=60
     BATCH_SIZE=768
     N_LAYERS=4
     HIDDEN_UNITS=512
     LEARNING_RATE=2e-4
-    echo "🐋 Large particle (>100k): epochs=50, layers=4, units=512, lr=2e-4"
+    EARLY_STOP=30
+    REDUCE_PAT=15
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    USE_BN_FLAG=""  # BN off
+    echo "🐋 Large (>100k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE, BN=off"
 elif [[ $OBJECT_COUNT -gt 50000 ]]; then
-    # Medium-large particles: Moderate capacity  
-    EPOCHS=40
+    # Medium-large
+    EPOCHS=45
     BATCH_SIZE=512
     N_LAYERS=3
     HIDDEN_UNITS=384
     LEARNING_RATE=3e-4
-    echo "🐟 Medium-large (50k-100k): epochs=40, layers=3, units=384, lr=3e-4"
+    echo "🐟 Medium-large (50k-100k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 elif [[ $OBJECT_COUNT -lt 5000 ]]; then
-    # Small particles: Simple models work fine
-    EPOCHS=30
+    # Small
+    EPOCHS=35
     BATCH_SIZE=256
     N_LAYERS=3
     HIDDEN_UNITS=256
     LEARNING_RATE=5e-4
-    echo "🐭 Small particle (<5k): epochs=30, layers=3, units=256, lr=5e-4"
+    WEIGHT_DECAY=1e-5
+    NOISE_STD=0.0
+    echo "🐭 Small (<5k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 else
-    # Medium particles: Balanced approach
-    EPOCHS=35
+    # Medium
+    EPOCHS=40
     BATCH_SIZE=512
     N_LAYERS=3
     HIDDEN_UNITS=320
     LEARNING_RATE=4e-4
-    echo "🐟 Medium particle (5k-50k): epochs=35, layers=3, units=320, lr=4e-4"
+    echo "🐟 Medium (5k-50k): epochs=$EPOCHS, layers=$N_LAYERS, units=$HIDDEN_UNITS, lr=$LEARNING_RATE"
 fi
 
 # Run training
@@ -153,6 +182,13 @@ python train_tfp_flows.py \
     --learning_rate $LEARNING_RATE \
     --n_layers $N_LAYERS \
     --hidden_units $HIDDEN_UNITS \
+    --validation_freq $VALID_FREQ \
+    --early_stopping_patience $EARLY_STOP \
+    --reduce_lr_patience $REDUCE_PAT \
+    --clip_outliers $CLIP_OUT \
+    --weight_decay $WEIGHT_DECAY \
+    --noise_std $NOISE_STD \
+    $USE_BN_FLAG \
     --generate-samples \
 
 TRAIN_EXIT=$?

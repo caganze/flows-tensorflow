@@ -8,3 +8,4 @@
 +            'use_kroupa_imf': True,  # MANDATORY - always True
              'n_samples_requested': n_samples if generate_samples else 0
          }
+

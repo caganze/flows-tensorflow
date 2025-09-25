@@ -99,3 +99,4 @@ echo ""
 echo "🔍 Verify fixes with:"
 echo "   grep -A2 -B2 'LD_LIBRARY_PATH\\|halo\${HALO_ID' brute_force_gpu_job.sh"
 
+

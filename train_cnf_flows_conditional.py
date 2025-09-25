@@ -80,28 +80,18 @@ def load_conditional_data(halo_id: str, particle_pid: int, suite: str = 'eden') 
     if not validate_symlib_environment():
         raise RuntimeError("❌ Symlib environment not available")
     
-    # Load particle data using symlib
+    # Load particle data using symlib (returns 7D: position + velocity + mass)
     data, metadata = load_particle_data(halo_id, particle_pid, suite)
     
-    # Extract phase space (position + velocity) and mass information
-    if data.shape[1] < 7:  # Assuming columns are [x, y, z, vx, vy, vz, mass, ...]
-        raise ValueError(f"Insufficient data dimensions. Expected at least 7 columns (pos+vel+mass), got {data.shape[1]}")
-    
     # Phase space data (first 6 columns: position + velocity)
-    phase_space = data[:, :6]
+    phase_space = data[:, :6]  # Shape: (N, 6)
     
-    # Mass data (7th column, assuming it's available in the symlib data)
-    # If mass is not in the 7th column, we'll need to load it separately
-    if data.shape[1] >= 7:
-        masses = data[:, 6:7]  # Keep as 2D array for conditioning
-    else:
-        # Fallback: use stellar mass from metadata or create dummy masses
-        stellar_mass = metadata.get('stellar_mass', 1e6)  # Default 1M solar masses
-        n_particles = len(phase_space)
-        # Create log-uniform distribution of masses around the stellar mass
-        log_masses = np.random.normal(np.log10(stellar_mass/n_particles), 0.5, n_particles)
-        masses = 10**log_masses.reshape(-1, 1)
-        print("⚠️ Using generated mass distribution - consider loading actual particle masses")
+    # Mass data (7th column)
+    masses = data[:, 6:7]  # Shape: (N, 1)
+    
+    print(f"✅ Loaded {len(masses)} individual particle masses from data")
+    print(f"   Mass range: [{masses.min():.2e}, {masses.max():.2e}] M☉")
+    print(f"   Mean mass: {masses.mean():.2e} M☉")
     
     # Convert to TensorFlow tensors
     phase_space_tensor = tf.constant(phase_space, dtype=tf.float32)
@@ -113,10 +103,19 @@ def load_conditional_data(halo_id: str, particle_pid: int, suite: str = 'eden') 
     print(f"   Stellar mass range: [{np.min(masses):.2e}, {np.max(masses):.2e}] M☉")
     
     # Update metadata with conditioning info
+    # Handle zero masses safely for log calculation
+    masses_nonzero = masses[masses > 0]
+    if len(masses_nonzero) > 0:
+        log_mass_min = float(np.log10(np.min(masses_nonzero)))
+        log_mass_max = float(np.log10(np.max(masses_nonzero)))
+    else:
+        log_mass_min = log_mass_max = 0.0
+    
     metadata.update({
         'has_mass_conditioning': True,
         'mass_range': [float(np.min(masses)), float(np.max(masses))],
-        'log_mass_range': [float(np.log10(np.min(masses))), float(np.log10(np.max(masses)))]
+        'log_mass_range': [log_mass_min, log_mass_max],
+        'n_zero_masses': int(np.sum(masses == 0))
     })
     
     return phase_space_tensor, mass_tensor, metadata
@@ -195,6 +194,27 @@ def preprocess_conditional_data(
     return processed_phase_space, processed_conditions, preprocessing_stats
 
 
+def make_json_serializable(obj):
+    """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
+    if hasattr(obj, 'numpy'):
+        return float(obj.numpy())
+    elif isinstance(obj, (np.floating, np.integer)):
+        return float(obj)
+    elif hasattr(obj, 'dtype') and hasattr(obj, 'numpy'):
+        # Handle TensorFlow tensors
+        try:
+            return float(obj.numpy())
+        except:
+            return str(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    else:
+        return obj
+
 def split_conditional_data(
     phase_space_data: tf.Tensor,
     mass_conditions: tf.Tensor,
@@ -264,20 +284,6 @@ def save_conditional_cnf_model_only(
     )
     
     # Save training results
-    def make_json_serializable(obj):
-        """Convert NumPy/TensorFlow types to JSON-serializable Python types"""
-        if hasattr(obj, 'numpy'):
-            return float(obj.numpy())
-        elif isinstance(obj, (np.floating, np.integer)):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, list):
-            return [make_json_serializable(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {k: make_json_serializable(v) for k, v in obj.items()}
-        else:
-            return obj
     
     results = {
         'train_losses': [float(loss) for loss in trainer.train_losses],
@@ -476,7 +482,7 @@ def main():
     
     # Set default output directory if not provided
     if not args.output_dir:
-        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/conditional_cnf_output/"
+        args.output_dir = "/oak/stanford/orgs/kipac/users/caganze/flows-tensorflow/cnf_output_conditional/"
     
     print("🚀 Conditional Continuous Normalizing Flow Training (Symlib)")
     print("=" * 70)
@@ -532,3 +538,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

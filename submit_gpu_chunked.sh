@@ -164,7 +164,7 @@ for (( chunk=START_CHUNK; chunk<=TOTAL_CHUNKS; chunk++ )); do
     echo "📦 Chunk $chunk: particles $start_particle-$end_particle ($chunk_size_actual particles)"
     
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "  sbatch --array=$start_particle-$end_particle%$CONCURRENT --partition=$PARTITION --time=$TIME_LIMIT --mem=$MEMORY --gpus=$GPUS --qos=owners brute_force_gpu_job.sh"
+        echo "  sbatch --array=$start_particle-$end_particle%$CONCURRENT --partition=$PARTITION --time=$TIME_LIMIT --mem=$MEMORY --gpus=$GPUS brute_force_gpu_job.sh"
     else
         # Submit the job with custom particle list
         JOB_ID=$(sbatch \
@@ -173,7 +173,6 @@ for (( chunk=START_CHUNK; chunk<=TOTAL_CHUNKS; chunk++ )); do
             --time=$TIME_LIMIT \
             --mem=$MEMORY \
             --gpus=$GPUS \
-            --qos=owners \
             --job-name="gpu_chunk_$chunk" \
             --export=PARTICLE_LIST_FILE="$PARTICLE_LIST" \
             brute_force_gpu_job.sh | grep -o '[0-9]\+')
