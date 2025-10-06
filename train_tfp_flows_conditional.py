@@ -654,8 +654,9 @@ def preprocess_conditional_data(
     bins = np.linspace(log_mass_min, log_mass_max, n_mass_bins + 1)
     
     # Get the integer bin index for each particle
-    # np.digitize returns indices [1, n_mass_bins]. Subtract 1 to get indices [0, n_mass_bins-1].
-    mass_bin_indices = np.digitize(log_masses, bins[:-1]) - 1
+    # np.digitize returns indices [1, n_mass_bins+1]. Subtract 1 to get indices [0, n_mass_bins].
+    # Use the full bins array (including the last edge) for proper binning
+    mass_bin_indices = np.digitize(log_masses, bins) - 1
     mass_bin_indices = np.clip(mass_bin_indices, 0, n_mass_bins - 1)
     
     # Convert to TensorFlow tensor of integer type

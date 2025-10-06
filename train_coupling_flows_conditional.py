@@ -517,8 +517,9 @@ def preprocess_conditional_data(
     bins = np.linspace(log_mass_min, log_mass_max, n_mass_bins + 1)
     
     # Get the integer bin index for each particle
-    # np.digitize returns indices [1, n_mass_bins]. Subtract 1 to get indices [0, n_mass_bins-1].
-    mass_bin_indices = np.digitize(log_masses, bins[:-1]) - 1
+    # np.digitize returns indices [1, n_mass_bins+1]. Subtract 1 to get indices [0, n_mass_bins].
+    # Use the full bins array (including the last edge) for proper binning
+    mass_bin_indices = np.digitize(log_masses, bins) - 1
     mass_bin_indices = np.clip(mass_bin_indices, 0, n_mass_bins - 1)
     
     # Convert to TensorFlow tensor of integer type
@@ -727,7 +728,7 @@ def train_and_save_conditional_coupling_flow(
             'best_val_loss': float(min(val_losses)) if val_losses else None,
             'metadata': make_json_serializable(metadata),
             'preprocessing_stats': make_json_serializable(preprocessing_stats),
-            'model_config': {
+        'model_config': {
                 'input_dim': 6,
                 'n_layers': n_layers,
                 'hidden_units': hidden_units,
@@ -776,6 +777,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=512, help='Batch size')
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--validation_freq', type=int, default=5, help='Validation frequency')
+    parser.add_argument('--train_val_split', type=float, default=0.2, help='Fraction of data to use for validation (default: 0.2)')
     
     # Data preprocessing
     parser.add_argument('--clip_outliers', type=float, default=5.0, help='Clip outliers beyond this many std devs')
@@ -786,7 +788,7 @@ def main():
     parser.add_argument('--n_samples', type=int, default=100000, help='Number of samples to generate')
     
     args = parser.parse_args()
-    
+
     # Set up output directory
     if args.output_dir is None:
         args.output_dir = f"coupling_output_conditional/{args.suite}/{args.halo_id}"
@@ -801,6 +803,7 @@ def main():
     print(f"Output directory: {args.output_dir}")
     print(f"Model config: {args.n_layers} layers, {args.hidden_units} units")
     print(f"Training config: {args.epochs} epochs, batch size {args.batch_size}")
+    print(f"Data split: {1-args.train_val_split:.1%} train, {args.train_val_split:.1%} validation")
     print(f"🌟 Conditioning: Mass distribution with {args.n_mass_bins} bins")
     
     # Train and save the flow
@@ -821,7 +824,8 @@ def main():
             n_gmm_components=args.n_gmm_components,
             generate_samples=args.generate_samples,
             n_samples=args.n_samples,
-            validation_freq=args.validation_freq
+            validation_freq=args.validation_freq,
+            validation_split=args.train_val_split
         )
         
         print(f"✅ Training completed successfully!")

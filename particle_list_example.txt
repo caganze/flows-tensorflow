@@ -1,0 +1,29 @@
+# Example particle list for coupling flow sampling
+# Format: pid,halo_id,suite,count,size
+1,Halo718,eden,270306,Large
+2,Halo718,eden,61393,Medium-Large
+3,Halo718,eden,49694,Medium
+4,Halo718,eden,19465,Medium
+5,Halo718,eden,61008,Medium-Large
+6,Halo718,eden,48363,Medium
+7,Halo718,eden,35935,Medium
+8,Halo718,eden,34106,Medium
+9,Halo718,eden,19162,Medium
+10,Halo718,eden,20409,Medium
+11,Halo718,eden,25660,Medium
+12,Halo718,eden,24164,Medium
+13,Halo718,eden,32536,Medium
+14,Halo718,eden,25880,Medium
+15,Halo718,eden,20199,Medium
+16,Halo718,eden,28427,Medium
+17,Halo718,eden,16015,Small
+18,Halo718,eden,12229,Small
+19,Halo718,eden,16882,Small
+20,Halo718,eden,19068,Small
+
+
+
+
+
+
+
